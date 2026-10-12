@@ -1,0 +1,14 @@
+diff --git a/components/helium_services/helium_services_helpers.cc b/components/helium_services/helium_services_helpers.cc
+index e9981deba..57c53d7a1 100644
+--- a/components/helium_services/helium_services_helpers.cc
++++ b/components/helium_services/helium_services_helpers.cc
+@@ -98,8 +98,7 @@ bool ShouldFetchBangs(const PrefService& prefs) {
+ }
+ 
+ bool ShouldAccessUpdateService(const PrefService& prefs) {
+-  return ShouldAccessServices(prefs) &&
+-         prefs.GetBoolean(prefs::kHeliumUpdateFetchingEnabled);
++  return false;
+ }
+ 
+ bool ShouldAccessComponentUpdateService(const PrefService& prefs) {

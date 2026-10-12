@@ -8,7 +8,7 @@ import re
 import sys
 import xml.etree.ElementTree as xml
 
-PRODUCT_NAME = os.environ.get('HELIUM_PRODUCT_NAME', 'Helium')
+PRODUCT_NAME = os.environ.get('HELIUM_PRODUCT_NAME', 'Argon')
 
 REPLACEMENT_REGEXES_STR = [
     # stuff we don't want to replace
