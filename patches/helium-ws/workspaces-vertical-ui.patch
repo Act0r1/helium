@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
-index 19bf2971d..019f47433 100644
+index 19bf2971d..ad3cffb7f 100644
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
 @@ -2045,6 +2045,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
@@ -17,10 +17,26 @@ index 19bf2971d..019f47433 100644
    // Pinned top chrome stays visible regardless of cursor position.
    if (IsZenModeTopChromePinned()) {
      reveal_top = true;
-@@ -2220,6 +2228,20 @@ void BrowserView::AppMenuClosed() {
+@@ -2220,6 +2228,45 @@ void BrowserView::AppMenuClosed() {
    }
  }
  
++namespace {
++
++void SetZenTopChromeAnimationParams(gfx::SlideAnimation& animation,
++                                    base::TimeDelta duration,
++                                    gfx::Tween::Type tween) {
++  animation.SetSlideDuration(gfx::Animation::RichAnimationDuration(duration));
++  animation.SetTweenType(tween);
++}
++
++void ResetZenTopChromeAnimationParams(gfx::SlideAnimation& animation) {
++  SetZenTopChromeAnimationParams(animation, kZenModeRevealAnimationDuration,
++                                 gfx::Tween::FAST_OUT_SLOW_IN_3);
++}
++
++}  // namespace
++
 +void BrowserView::OnSidePanelVisibilityChanged() {
 +  if (!zen_mode_enabled_) {
 +    return;
@@ -30,14 +46,33 @@ index 19bf2971d..019f47433 100644
 +  const bool cursor_over_top_chrome =
 +      GetCursorLocationInBrowserView(&cursor) &&
 +      IsPointInZenTopChromeBounds(cursor);
++  SetZenTopChromeAnimationParams(
++      zen_top_chrome_animation_,
++      base::Milliseconds(features::kSidePanelFlyoverDurationMs.Get()),
++      features::UseSidePanelFlyoverAnimation()
++          ? gfx::Tween::ACCEL_80_DECEL_20
++          : gfx::Tween::ACCEL_45_DECEL_88);
 +  UpdateZenModeReveal(
 +      /*reveal_top=*/IsSidePanelOpen(side_panel_) || cursor_over_top_chrome,
 +      /*reveal_side=*/zen_side_chrome_animation_.IsShowing());
++  if (!zen_top_chrome_animation_.is_animating()) {
++    ResetZenTopChromeAnimationParams(zen_top_chrome_animation_);
++  }
 +}
 +
  bool BrowserView::IsPointInZenTopChromeBounds(const gfx::Point& point) const {
    if (!top_container_ || !top_container_->parent()) {
      return false;
+@@ -6868,6 +6915,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
+ 
+ void BrowserView::AnimationEnded(const gfx::Animation* animation) {
+   AnimationProgressed(animation);
++  if (animation == &zen_top_chrome_animation_) {
++    ResetZenTopChromeAnimationParams(zen_top_chrome_animation_);
++  }
+ }
+ 
+ WebAppFrameToolbarView* BrowserView::web_app_frame_toolbar() {
 diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
 index c91e80277..ee8354f77 100644
 --- a/chrome/browser/ui/views/frame/browser_view.h
