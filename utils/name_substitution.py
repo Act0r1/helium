@@ -23,14 +23,14 @@ def replacement_sanity():
     before_after = [
         ('chrome://about', 'helium://about'),
         ('Chrome Root Program', 'Chrome Root Program'),
-        (' Chrome  ', ' Helium  '),
+        (' Chrome  ', f' {util.PRODUCT_NAME}  '),
         ('Chrome Web Store', 'Chrome Web Store'),
         ('Chromium Web Store', 'Chromium Web Store'),
         ('Chrome Remote Desktop', 'Chrome Remote Desktop'),
-        ('Google Chrome', 'Helium'),
-        ('Chrome Google Chrome Chrome Chromium', 'Helium Helium Helium Helium'),
-        ('Chrome', 'Helium'),
-        ('Chromium', 'Helium'),
+        ('Google Chrome', util.PRODUCT_NAME),
+        ('Chrome Google Chrome Chrome Chromium', ' '.join([util.PRODUCT_NAME] * 4)),
+        ('Chrome', util.PRODUCT_NAME),
+        ('Chromium', util.PRODUCT_NAME),
     ]
 
     for source, expected in before_after:

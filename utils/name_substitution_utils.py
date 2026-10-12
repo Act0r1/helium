@@ -3,9 +3,12 @@
 # the terms of the GPL-3.0 license that can be found in the LICENSE file.
 """Util library for name_substitution.py"""
 
+import os
 import re
 import sys
 import xml.etree.ElementTree as xml
+
+PRODUCT_NAME = os.environ.get('HELIUM_PRODUCT_NAME', 'Helium')
 
 REPLACEMENT_REGEXES_STR = [
     # stuff we don't want to replace
@@ -15,7 +18,7 @@ REPLACEMENT_REGEXES_STR = [
 
     # main replacement(s)
     (r'(\b)chrome://', r'\1helium://'),
-    (r'(?:Google )?Chrom(e|ium)(?!\w)', r'Helium'),
+    (r'(?:Google )?Chrom(e|ium)(?!\w)', PRODUCT_NAME),
 
     # post-replacement cleanup
     (r'((?:Google )?Chrom(e|ium))_unreplace', r'\1'),
