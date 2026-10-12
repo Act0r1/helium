@@ -1,0 +1,145 @@
+diff --git a/chrome/browser/resources/new_tab_page/app.css b/chrome/browser/resources/new_tab_page/app.css
+index 5d291aada..ae18f4e9c 100644
+--- a/chrome/browser/resources/new_tab_page/app.css
++++ b/chrome/browser/resources/new_tab_page/app.css
+@@ -109,6 +109,8 @@ cr-most-visited {
+   --most-visited-focus-shadow: var(--ntp-focus-shadow);
+   --most-visited-text-color: var(--color-new-tab-page-most-visited-foreground);
+   --most-visited-text-shadow: var(--ntp-theme-text-shadow);
++  --most-visited-tile-size: 64px;
++  --most-visited-gap: 8px;
+ }
+ 
+ :host([show-background-image_]) {
+@@ -165,10 +167,10 @@ cr-most-visited {
+   align-items: center;
+   display: flex;
+   flex-direction: column;
+-  justify-content: center;
+-  height: calc(100vh - var(--ntp-one-google-bar-height));
++  justify-content: flex-start;
++  height: calc(100vh - 48px);
+   min-width: fit-content; /* Prevents OneGoogleBar cutoff at 500% zoom. */
+-  padding-top: var(--ntp-one-google-bar-height);
++  padding-top: 48px;
+   position: relative;
+   z-index: 1;
+ }
+diff --git a/chrome/browser/resources/new_tab_page/app.html b/chrome/browser/resources/new_tab_page/app.html
+index 7a52493fe..6c4ac4820 100644
+--- a/chrome/browser/resources/new_tab_page/app.html
++++ b/chrome/browser/resources/new_tab_page/app.html
+@@ -2,8 +2,7 @@
+   ${this.lazyRender_ ? html`
+     ${this.shortcutsEnabled_ ? html`
+       <cr-most-visited id="mostVisited" .theme="${this.theme_?.mostVisited || null}"
+-          single-row reflow-on-overflow
+-          ?expandable-tiles-enabled="${this.ntpNextFeaturesEnabled_}"
++          single-row reflow-on-overflow hide-title max-tiles="5"
+           max-tiles-in-collapsed-state="${this.maxTilesInCollapsedState_}"
+           max-shortcuts-in-expanded-state="${this.maxShortcutsInExpandedState_}"
+           max-most-visited-tiles-in-expanded-state="${this.maxMostVisitedTilesInExpandedState_}"
+diff --git a/ui/webui/resources/cr_components/most_visited/most_visited.css b/ui/webui/resources/cr_components/most_visited/most_visited.css
+index 8c83e8763..9867998b1 100644
+--- a/ui/webui/resources/cr_components/most_visited/most_visited.css
++++ b/ui/webui/resources/cr_components/most_visited/most_visited.css
+@@ -309,6 +309,10 @@ cr-icon-button {
+   transition: opacity 100ms ease-in-out;
+ }
+ 
++#actionMenuButton {
++  display: none;
++}
++
+ :host-context([dir=rtl]) cr-icon-button {
+   left: 0;
+   right: unset;
+diff --git a/ui/webui/resources/cr_components/most_visited/most_visited.html.ts b/ui/webui/resources/cr_components/most_visited/most_visited.html.ts
+index 38ec39464..93dba1291 100644
+--- a/ui/webui/resources/cr_components/most_visited/most_visited.html.ts
++++ b/ui/webui/resources/cr_components/most_visited/most_visited.html.ts
+@@ -17,7 +17,9 @@ export function getHtml(this: MostVisitedElement) {
+     <div class="tile" ?query-tile="${item.isQueryTile}"
+         ?hidden="${this.isHidden_(index)}" title="${item.title}"
+         @dragstart="${this.onDragstart_}" @touchstart="${this.onTouchstart_}"
+-        @click="${this.onTileClick_}" @mouseenter="${this.onTileMouseenter_}"
++        @click="${this.onTileClick_}"
++        @contextmenu="${this.onTileContextmenu_}"
++        @mouseenter="${this.onTileMouseenter_}"
+         @mouseleave="${this.onTileMouseleave_}"
+         @mousedown="${this.onTileMousedown_}" @keydown="${this.onTileKeydown_}"
+         draggable="${!this.nonEditable}" data-index="${index}">
+diff --git a/ui/webui/resources/cr_components/most_visited/most_visited.ts b/ui/webui/resources/cr_components/most_visited/most_visited.ts
+index 57fb3a263..39ddad1eb 100644
+--- a/ui/webui/resources/cr_components/most_visited/most_visited.ts
++++ b/ui/webui/resources/cr_components/most_visited/most_visited.ts
+@@ -521,21 +521,24 @@ export class MostVisitedElement extends MostVisitedElementBase {
+   }
+ 
+   private computeDialogShortcutAlreadyExists_(): boolean {
+-    const dialogTileHref = (normalizeUrl(this.dialogTileUrl_) || {}).href;
+-    if (!dialogTileHref) {
++    const dialogTileUrl = normalizeUrl(this.dialogTileUrl_);
++    if (!dialogTileUrl) {
+       return false;
+     }
+     // Bypass check for enteprise shortcuts.
+     if (this.dialogSource_ === TileSource.ENTERPRISE_SHORTCUTS) {
+       return false;
+     }
+-    return (this.tiles_ || []).some(({url}, index) => {
+-      if (index === this.actionMenuTargetIndex_) {
++    const siteKey = (url: URL): string =>
++        url.hostname.replace(/^www\./, '').replace(/\.$/, '');
++    const editedUrl = this.tiles_[this.actionMenuTargetIndex_]?.url;
++    return (this.info_?.tiles || []).some(({url, source}) => {
++      if (url === editedUrl) {
+         return false;
+       }
+       const otherUrl = normalizeUrl(url);
+-      return otherUrl && otherUrl.href === dialogTileHref &&
+-          this.tiles_[index]!.source !== TileSource.ENTERPRISE_SHORTCUTS;
++      return otherUrl && siteKey(otherUrl) === siteKey(dialogTileUrl) &&
++          source !== TileSource.ENTERPRISE_SHORTCUTS;
+     });
+   }
+ 
+@@ -1047,17 +1050,34 @@ export class MostVisitedElement extends MostVisitedElementBase {
+     return Number(target.dataset['index']);
+   }
+ 
+-  protected onTileActionButtonClick_(e: Event) {
+-    e.preventDefault();
+-    this.actionMenuTargetIndex_ = this.getCurrentTargetIndex_(e);
+-    const item = this.tiles_[this.getCurrentTargetIndex_(e)];
++  private prepareActionMenu_(index: number) {
++    this.actionMenuTargetIndex_ = index;
++    const item = this.tiles_[index];
+     assert(item);
+     this.actionMenuRemoveDisabled_ = !item.allowUserDelete;
+     this.actionMenuViewOrEditTitle_ = loadTimeData.getString(
+         item.allowUserEdit ? 'editLinkTitle' : 'viewLink');
++  }
++
++  protected onTileActionButtonClick_(e: Event) {
++    e.preventDefault();
++    this.prepareActionMenu_(this.getCurrentTargetIndex_(e));
+     this.$.actionMenu.showAt(e.target as HTMLElement);
+   }
+ 
++  protected onTileContextmenu_(e: MouseEvent) {
++    const index = this.getCurrentTargetIndex_(e);
++    const item = this.tiles_[index];
++    if (!item || this.nonEditable ||
++        (!this.customLinksEnabled_ &&
++         !this.isFromEnterpriseShortcut_(item.source))) {
++      return;
++    }
++    e.preventDefault();
++    this.prepareActionMenu_(index);
++    this.$.actionMenu.showAtPosition({top: e.clientY, left: e.clientX});
++  }
++
+   protected onTileRemoveButtonClick_(e: Event) {
+     e.preventDefault();
+     this.tileRemove_(this.getCurrentTargetIndex_(e));

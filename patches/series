@@ -367,3 +367,10 @@ helium/ui/compact-debugger-warning.patch
 helium/ui/progress-bar.patch
 helium/ui/exclusive-access-bubble.patch
 helium/ui/hide-page-actions-flag.patch
+helium-ws/enable-password-saving-by-default.patch
+helium-ws/re-enable-password-manager.patch
+helium-ws/workspaces-strings.patch
+helium-ws/workspaces-core.patch
+helium-ws/workspaces-vertical-ui.patch
+helium-ws/workspaces-commands.patch
+helium-ws/ntp-shortcuts.patch

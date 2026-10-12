@@ -1,0 +1,2818 @@
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+index 19bf2971d..019f47433 100644
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -2045,6 +2045,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
+     reveal_side = true;
+   }
+ 
++  // Keep the VTS visible while a bubble or menu opened from it holds a
++  // keep-state lock on it.
++  if (!reveal_side && ShouldDrawVerticalTabStrip() &&
++      vertical_tab_strip_region_view_ &&
++      vertical_tab_strip_region_view_->HasKeepStateLock()) {
++    reveal_side = true;
++  }
++
+   // Pinned top chrome stays visible regardless of cursor position.
+   if (IsZenModeTopChromePinned()) {
+     reveal_top = true;
+@@ -2220,6 +2228,20 @@ void BrowserView::AppMenuClosed() {
+   }
+ }
+ 
++void BrowserView::OnSidePanelVisibilityChanged() {
++  if (!zen_mode_enabled_) {
++    return;
++  }
++  zen_cursor_exit_timer_.Stop();
++  gfx::Point cursor;
++  const bool cursor_over_top_chrome =
++      GetCursorLocationInBrowserView(&cursor) &&
++      IsPointInZenTopChromeBounds(cursor);
++  UpdateZenModeReveal(
++      /*reveal_top=*/IsSidePanelOpen(side_panel_) || cursor_over_top_chrome,
++      /*reveal_side=*/zen_side_chrome_animation_.IsShowing());
++}
++
+ bool BrowserView::IsPointInZenTopChromeBounds(const gfx::Point& point) const {
+   if (!top_container_ || !top_container_->parent()) {
+     return false;
+diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
+index c91e80277..ee8354f77 100644
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -440,6 +440,9 @@ class BrowserView : public BrowserWindow,
+   void ToggleZenModeSideChrome();
+   void ToggleZenModeTopChrome();
+ 
++  // Starts the zen top chrome reveal together with the side panel animation.
++  void OnSidePanelVisibilityChanged();
++
+   // Returns the widget for anchoring bubbles and dialogs.
+   // This returns BrowserWidget except on fullscreen macOS where the toolbar is
+   // hosted in an OverlayWidget.
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+index b7478d5cb..843335c5d 100644
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -106,6 +106,12 @@ class VerticalTabStripRegionView final
+   std::unique_ptr<ExpandOnHoverLock> GetExpandOnHoverLock(
+       ExpandOnHoverLockType lock_type) override;
+ 
++  // True while a kKeepCurrentState or kKeepExpanded lock is held, e.g. by a
++  // bubble or menu opened from the tab strip.
++  bool HasKeepStateLock() const {
++    return keep_current_state_lock_count_ > 0 || keep_expanded_lock_count_ > 0;
++  }
++
+   // BrowserRootView::DropTarget:
+   void HandleDragUpdate(
+       const std::optional<BrowserRootView::DropIndex>& index) override;
+diff --git a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
+index e2d93808d..0535cea4e 100644
+--- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
++++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
+@@ -116,7 +116,12 @@ gfx::Size PinnedTabContainerView::GetMinimumSize() const {
+ 
+   // The minimum size should be enough to show a row and a half, if needed.
+   auto collapse_state = GetTabStripCollapseState();
+-  const int num_children = collection_node_->GetDirectChildren().size();
++  int num_children = 0;
++  for (const auto* child : collection_node_->GetDirectChildren()) {
++    if (layout_manager_->CanBeVisible(child)) {
++      num_children++;
++    }
++  }
+   const float min_rows = std::min(
+       (collapse_state != tabs::VerticalTabStripCollapseState::kExpanded ? 1.5f
+                                                                         : 1.0f),
+@@ -382,9 +387,17 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+ 
+   int x = 0;
+   int y = 0;
+-  int children_on_row = children.size();
++  int children_on_row = 0;
++  for (const auto* child : children) {
++    if (layout_manager_->CanBeVisible(child)) {
++      children_on_row++;
++    }
++  }
+ 
+   if (children_on_row == 0) {
++    for (auto* child : children) {
++      layouts.child_layouts.emplace_back(child, false, gfx::Rect());
++    }
+     layouts.host_size = gfx::Size(0, 0);
+     return layouts;
+   }
+@@ -431,7 +444,8 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+     bounds.set_width(child_width);
+ 
+     auto drag_data = GetVisualDataForDraggedView(*child);
+-    const bool should_show_child = !(drag_data && drag_data->should_hide);
++    const bool should_show_child = layout_manager_->CanBeVisible(child) &&
++                                   !(drag_data && drag_data->should_hide);
+     if (!should_show_child) {
+       layouts.child_layouts.emplace_back(child, false, gfx::Rect());
+       continue;
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
+index e48e2d5bd..dea61895d 100644
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
+@@ -30,6 +30,7 @@
+ #include "chrome/browser/ui/views/tabs/horizontal/tab_scroll_button_container.h"
+ #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_scroll_bar.h"
++#include "chrome/browser/ui/views/workspaces/workspace_switcher_view.h"
+ #include "chrome/common/pref_names.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/tabs/public/tab_collection_types.h"
+@@ -228,6 +229,16 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
+     }
+   }
+ 
++  if (IsVerticalOrientation(collection_node_)) {
++    auto* browser =
++        collection_node_->GetController()->GetBrowserView()->browser();
++    if (auto* controller = workspaces::WorkspaceController::From(browser)) {
++      workspace_observation_.Observe(controller);
++      workspace_header_ =
++          AddChildView(workspaces::CreateWorkspaceHeaderView(browser));
++    }
++  }
++
+   SetNotifyEnterExitOnChild(true);
+   UpdateColors();
+ }
+@@ -239,6 +250,7 @@ TabStripView::~TabStripView() {
+ }
+ 
+ void TabStripView::AddedToWidget() {
++  UpdateWorkspaceVisibility();
+   views::Widget* const widget = GetWidget();
+   paint_as_active_subscription_ = widget->RegisterPaintAsActiveChangedCallback(
+       base::BindRepeating(&TabStripView::UpdateColors, base::Unretained(this)));
+@@ -327,6 +339,7 @@ void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
+ }
+ 
+ void TabStripView::OnTabChanged(const tabs::TabInterface* active_tab) {
++  UpdateWorkspaceVisibility();
+   if (!collection_node_ || !active_tab) {
+     return;
+   }
+@@ -611,6 +624,7 @@ void TabStripView::SetScrollViewProperties(views::ScrollView* scroll_view) {
+ }
+ 
+ void TabStripView::ResetCollectionNode() {
++  workspace_observation_.Reset();
+   collection_node_ = nullptr;
+   if (tab_scroll_button_container_) {
+     tab_scroll_button_container_->SetScrollView(nullptr);
+@@ -798,6 +812,43 @@ gfx::Rect TabStripView::GetBoundsInScrollViewContents(
+   return bounds;
+ }
+ 
++void TabStripView::OnWorkspacesChanged() {
++  UpdateWorkspaceVisibility();
++}
++
++void TabStripView::OnActiveWorkspaceChanged() {
++  UpdateWorkspaceVisibility();
++}
++
++void TabStripView::UpdateWorkspaceVisibility() {
++  if (!collection_node_ || !workspace_observation_.IsObserving()) {
++    return;
++  }
++  const auto* controller = workspace_observation_.GetSource();
++  for (const auto type :
++       {TabCollectionNode::Type::PINNED, TabCollectionNode::Type::UNPINNED}) {
++    auto* container = collection_node_->GetChildNodeOfType(type);
++    if (!container) {
++      continue;
++    }
++    for (const auto& child : container->children()) {
++      const TabCollectionNode* node = child.get();
++      while (node->type() != TabCollectionNode::Type::TAB &&
++             !node->children().empty()) {
++        node = node->children().front().get();
++      }
++      const tabs::TabInterface* tab =
++          node->type() == TabCollectionNode::Type::TAB
++              ? std::get<tabs::ConstDanglingUntriagedTabInterface>(
++                    node->GetNodeData())
++              : nullptr;
++      child->view()->SetVisible(!tab || controller->IsTabVisible(tab));
++    }
++    container->view()->InvalidateLayout();
++  }
++  InvalidateLayout();
++}
++
+ void TabStripView::UpdateColors() {}
+ 
+ bool TabStripView::IsFrameActive() const {
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.h b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
+index 1767160a0..0a9adc1df 100644
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view.h
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
+@@ -7,6 +7,7 @@
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "base/scoped_observation.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
+ #include "components/prefs/pref_change_registrar.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+@@ -34,7 +35,8 @@ class Separator;
+ // scrolling to the active tab view when the active tab changes.
+ // Layout is managed by `TabStripViewLayout`.
+ class TabStripView final : public views::View,
+-                           public views::WidgetObserver {
++                           public views::WidgetObserver,
++                           public workspaces::WorkspaceController::Observer {
+   METADATA_HEADER(TabStripView, views::View)
+ 
+  public:
+@@ -56,6 +58,7 @@ class TabStripView final : public views::View,
+   views::ScrollView* unpinned_tabs_scroll_view() const {
+     return unpinned_tabs_scroll_view_;
+   }
++  views::View* workspace_header() const { return workspace_header_; }
+ 
+   void SetCollapsedState(bool is_collapsed);
+   void SetIsAnimatingSize(bool is_animating);
+@@ -73,6 +76,8 @@ class TabStripView final : public views::View,
+ 
+   void OnChildMoved(TabCollectionNode* moved_node);
+   void OnTabChanged(const tabs::TabInterface* active_tab);
++  void OnWorkspacesChanged() override;
++  void OnActiveWorkspaceChanged() override;
+ 
+   // Scrolls the scroll view(s) to ensure that the specified target tabs/views
+   // are visible within the viewport.
+@@ -130,6 +135,7 @@ class TabStripView final : public views::View,
+                                           views::ScrollView* scroll_view);
+ 
+   void UpdateColors();
++  void UpdateWorkspaceVisibility();
+ 
+   bool IsFrameActive() const;
+ 
+@@ -149,6 +155,7 @@ class TabStripView final : public views::View,
+   raw_ptr<PinnedTabContainerView> pinned_tabs_container_view_ = nullptr;
+   raw_ptr<views::Separator> tabs_separator_ = nullptr;
+   raw_ptr<views::ScrollView> unpinned_tabs_scroll_view_ = nullptr;
++  raw_ptr<views::View> workspace_header_ = nullptr;
+   raw_ptr<UnpinnedTabContainerView> unpinned_tabs_container_view_ = nullptr;
+   raw_ptr<TabScrollButtonContainer> tab_scroll_button_container_ = nullptr;
+   bool is_collapsed_ = false;
+@@ -171,6 +178,10 @@ class TabStripView final : public views::View,
+   base::CallbackListSubscription paint_as_active_subscription_;
+   std::vector<base::CallbackListSubscription> callback_subscriptions_;
+ 
++  base::ScopedObservation<workspaces::WorkspaceController,
++                          workspaces::WorkspaceController::Observer>
++      workspace_observation_{this};
++
+   base::ScopedObservation<views::Widget, views::WidgetObserver>
+       widget_observation_{this};
+ };
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
+index 734df66fd..4086cf1be 100644
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
+@@ -277,6 +277,23 @@ views::ProposedLayout TabStripViewLayout::CalculateVerticalLayout(
+     }
+   }
+ 
++  if (views::View* header = tab_strip_view->workspace_header()) {
++    const bool visible = header->GetVisible();
++    const int header_height =
++        visible ? header->GetPreferredSize(size_bounds).height() : 0;
++    layouts.child_layouts.emplace_back(
++        header, visible,
++        gfx::Rect(region_horizontal_padding, y,
++                  std::max(0, size_bounds.width().value() -
++                                  2 * region_horizontal_padding),
++                  header_height));
++    if (visible) {
++      y += header_height + region_vertical_padding;
++      remaining_height = std::max(
++          0, remaining_height - header_height - region_vertical_padding);
++    }
++  }
++
+   // Place the unpinned container using the entire available width, we do not
+   // inset the x value by `region_horizontal_padding` here because, when the tab
+   // strip is collapsed, tab groups need to draw the group colored line in this
+diff --git a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
+index 5dd9f7ef1..f45e8fc20 100644
+--- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
+@@ -336,7 +336,7 @@ gfx::Size UnpinnedTabContainerViewLayout::CalculateVerticalMinimumSize(
+   int num_children = 0;
+   for (const auto* child :
+        tab_container_view->collection_node_->GetDirectChildren()) {
+-    bool should_show = true;
++    bool should_show = child->GetVisible();
+     if (focused_group_id.has_value()) {
+       std::optional<tab_groups::TabGroupId> group_id =
+           GetGroupIdForChild(child);
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
+index 01be335c0..fe59a2f23 100644
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
+@@ -10,7 +10,10 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.h"
++#include "chrome/browser/ui/views/workspaces/workspace_switcher_view.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/views/layout/flex_layout_types.h"
+ #include "ui/views/view_class_properties.h"
+ 
+ VerticalTabStripBottomContainer::VerticalTabStripBottomContainer(
+@@ -35,6 +38,15 @@ VerticalTabStripBottomContainer::VerticalTabStripBottomContainer(
+           record_new_tab_button_pressed);
+ 
+   new_tab_button_ = AddChildView(std::move(new_tab_button));
++  if (workspaces::WorkspaceController::From(browser)) {
++    workspace_spacer_ = AddChildView(std::make_unique<views::View>());
++    workspace_spacer_->SetProperty(
++        views::kFlexBehaviorKey,
++        views::FlexSpecification(views::LayoutOrientation::kVertical,
++                                 views::MinimumFlexSizeRule::kScaleToZero,
++                                 views::MaximumFlexSizeRule::kUnbounded));
++    AddChildView(workspaces::CreateWorkspaceSwitcherView(browser));
++  }
+ 
+   OnCollapseStateChanged(state_controller->GetCollapseState());
+   collapsed_state_change_subscription_ =
+@@ -49,7 +61,7 @@ VerticalTabStripBottomContainer::~VerticalTabStripBottomContainer() = default;
+ bool VerticalTabStripBottomContainer::IsPositionInWindowCaption(
+     const gfx::Point& point) {
+   for (views::View* child : children()) {
+-    if (!child->GetVisible()) {
++    if (!child->GetVisible() || child == workspace_spacer_) {
+       continue;
+     }
+     gfx::Point point_in_child = point;
+@@ -85,9 +97,8 @@ void VerticalTabStripBottomContainer::UpdateButtonStyles(bool collapsed) {
+                                : views::LayoutOrientation::kHorizontal;
+ 
+   // Setting button's layout based on collapsed state
+-  SetOrientation(orientation);
+-  SetCrossAxisAlignment(collapsed ? views::LayoutAlignment::kStretch
+-                                  : views::LayoutAlignment::kStart);
++  SetOrientation(views::LayoutOrientation::kVertical);
++  SetCrossAxisAlignment(views::LayoutAlignment::kStretch);
+ 
+   new_tab_button_->SetProperty(
+       views::kFlexBehaviorKey,
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h
+index fe76a1b5d..7210c8225 100644
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h
+@@ -46,6 +46,7 @@ class VerticalTabStripBottomContainer : public views::FlexLayoutView {
+ 
+   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
+   raw_ptr<VerticalNewTabButton> new_tab_button_ = nullptr;
++  raw_ptr<views::View> workspace_spacer_ = nullptr;
+   base::CallbackListSubscription collapsed_state_change_subscription_;
+   base::CallbackListSubscription new_tab_button_pressed_subscription_;
+ 
+diff --git a/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
+new file mode 100644
+index 000000000..558dd366f
+--- /dev/null
++++ b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
+@@ -0,0 +1,782 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/workspaces/workspace_switcher_view.h"
++
++#include <memory>
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
++#include "base/i18n/break_iterator.h"
++#include "base/i18n/case_conversion.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "base/strings/string_util.h"
++#include "base/task/single_thread_task_runner.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/tabs/tab_group_theme.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/workspaces/workspace_vector_icons.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
++#include "chrome/grit/generated_resources.h"
++#include "components/tab_groups/tab_group_color.h"
++#include "components/vector_icons/vector_icons.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/accessibility/ax_enums.mojom.h"
++#include "ui/base/interaction/element_identifier.h"
++#include "ui/base/l10n/l10n_util.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/models/combobox_model.h"
++#include "ui/base/models/dialog_model.h"
++#include "ui/base/models/image_model.h"
++#include "ui/base/mojom/menu_source_type.mojom-shared.h"
++#include "ui/color/color_id.h"
++#include "ui/color/color_provider.h"
++#include "ui/gfx/font.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/point.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/geometry/size.h"
++#include "ui/menus/simple_menu_model.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/animation/ink_drop.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/bubble/bubble_dialog_delegate_view.h"
++#include "ui/views/bubble/bubble_dialog_model_host.h"
++#include "ui/views/context_menu_controller.h"
++#include "ui/views/controls/button/button.h"
++#include "ui/views/controls/button/image_button.h"
++#include "ui/views/controls/button/image_button_factory.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/highlight_path_generator.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/controls/menu/menu_runner.h"
++#include "ui/views/layout/flex_layout.h"
++#include "ui/views/layout/flex_layout_types.h"
++#include "ui/views/layout/flex_layout_view.h"
++#include "ui/views/view_class_properties.h"
++#include "ui/views/view_tracker.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++#include "ui/views/widget/widget_delegate.h"
++
++namespace {
++
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWorkspaceNameFieldId);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWorkspaceIconFieldId);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWorkspaceColorFieldId);
++
++constexpr int kChipSize = 28;
++constexpr int kIconSize = 16;
++constexpr int kAddButtonSize = 32;
++constexpr int kAddIconSize = 20;
++constexpr int kHeaderHeight = 32;
++constexpr int kCornerRadius = 8;
++constexpr size_t kPickerColumns = 8;
++constexpr SkAlpha kActiveChipAlpha = 0x40;
++constexpr SkAlpha kHeaderAlpha = 0x26;
++constexpr SkAlpha kInactiveTextAlpha = 0x80;
++
++static_assert(workspaces::kWorkspaceVectorIcons.size() ==
++              workspaces::kWorkspaceIcons.size());
++
++const gfx::VectorIcon* VectorIconFor(std::u16string_view icon) {
++  const auto it = std::ranges::find(workspaces::kWorkspaceIcons, icon);
++  if (it == workspaces::kWorkspaceIcons.end()) {
++    return nullptr;
++  }
++  return workspaces::kWorkspaceVectorIcons[it -
++                                           workspaces::kWorkspaceIcons.begin()];
++}
++
++enum MenuCommand {
++  kEditCommand,
++  kNewCommand,
++  kCloseCommand,
++};
++
++std::u16string FirstGrapheme(std::u16string_view text) {
++  base::i18n::BreakIterator graphemes(
++      text, base::i18n::BreakIterator::BREAK_CHARACTER);
++  if (text.empty() || !graphemes.Init() || !graphemes.Advance()) {
++    return std::u16string();
++  }
++  return std::u16string(graphemes.GetString());
++}
++
++std::u16string IconText(const workspaces::Workspace& workspace) {
++  const std::u16string icon =
++      FirstGrapheme(base::TrimWhitespace(workspace.icon, base::TRIM_ALL));
++  if (!icon.empty()) {
++    return icon;
++  }
++  return base::i18n::ToUpper(
++      FirstGrapheme(base::TrimWhitespace(workspace.name, base::TRIM_ALL)));
++}
++
++SkColor WorkspaceColor(const ui::ColorProvider* provider,
++                       tab_groups::TabGroupColorId color_id) {
++  return provider->GetColor(GetTabGroupContextMenuColorId(color_id));
++}
++
++bool IsCollapsed(BrowserWindowInterface* browser) {
++  auto* state = tabs::VerticalTabStripStateController::From(browser);
++  return state && state->GetCollapseState() !=
++                      tabs::VerticalTabStripCollapseState::kExpanded;
++}
++
++std::vector<tab_groups::TabGroupColorId> Colors() {
++  std::vector<tab_groups::TabGroupColorId> colors;
++  for (const auto& [color, label] : tab_groups::GetTabGroupColorLabelMap()) {
++    colors.push_back(color);
++  }
++  return colors;
++}
++
++class ColorComboboxModel : public ui::ComboboxModel {
++ public:
++  explicit ColorComboboxModel(tab_groups::TabGroupColorId selected)
++      : colors_(Colors()), selected_(selected) {}
++
++  tab_groups::TabGroupColorId GetColorAt(size_t index) const {
++    return colors_[index];
++  }
++
++  size_t GetItemCount() const override { return colors_.size(); }
++
++  std::u16string GetItemAt(size_t index) const override {
++    return tab_groups::GetTabGroupColorLabelMap().at(colors_[index]);
++  }
++
++  std::optional<size_t> GetDefaultIndex() const override {
++    const auto it = std::ranges::find(colors_, selected_);
++    return it == colors_.end() ? 0 : it - colors_.begin();
++  }
++
++ private:
++  const std::vector<tab_groups::TabGroupColorId> colors_;
++  const tab_groups::TabGroupColorId selected_;
++};
++
++class WorkspaceChipButton : public views::LabelButton {
++  METADATA_HEADER(WorkspaceChipButton, views::LabelButton)
++
++ public:
++  WorkspaceChipButton(PressedCallback callback, std::u16string_view text)
++      : LabelButton(std::move(callback)) {
++    SetPreferredSize(gfx::Size(kChipSize, kChipSize));
++    SetMinSize(gfx::Size(kChipSize, kChipSize));
++    SetHorizontalAlignment(gfx::ALIGN_CENTER);
++    SetBorder(views::CreateEmptyBorder(0));
++    label()->SetSubpixelRenderingEnabled(false);
++    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
++                                                  kCornerRadius);
++    SetIcon(text);
++  }
++  WorkspaceChipButton(const WorkspaceChipButton&) = delete;
++  WorkspaceChipButton& operator=(const WorkspaceChipButton&) = delete;
++  ~WorkspaceChipButton() override = default;
++
++  const std::u16string& icon() const { return icon_; }
++
++  void SetIcon(std::u16string_view icon) {
++    icon_ = icon;
++    SetText(VectorIconFor(icon_) ? std::u16string_view() : icon_);
++    GetViewAccessibility().SetName(icon_);
++    UpdateImage();
++  }
++
++  void SetIconColor(ui::ColorVariant color) {
++    icon_color_ = color;
++    SetEnabledTextColors(color);
++    UpdateImage();
++  }
++
++ private:
++  void UpdateImage() {
++    const gfx::VectorIcon* vector_icon = VectorIconFor(icon_);
++    SetImageModel(STATE_NORMAL, vector_icon
++                                    ? ui::ImageModel::FromVectorIcon(
++                                          *vector_icon, icon_color_, kIconSize)
++                                    : ui::ImageModel());
++  }
++
++  std::u16string icon_;
++  ui::ColorVariant icon_color_ = ui::kColorLabelForeground;
++};
++
++BEGIN_METADATA(WorkspaceChipButton)
++END_METADATA
++
++using IconPickedCallback = base::OnceCallback<void(const std::u16string&)>;
++
++// Grid of workspace icons. Picking one runs the callback and closes the bubble.
++class WorkspaceIconGrid : public views::View {
++  METADATA_HEADER(WorkspaceIconGrid, views::View)
++
++ public:
++  WorkspaceIconGrid(
++      std::u16string_view selected_icon,
++      IconPickedCallback callback,
++      std::unique_ptr<views::BubbleDialogDelegate::CloseOnDeactivatePin>
++          parent_pin)
++      : callback_(std::move(callback)), parent_pin_(std::move(parent_pin)) {
++    SetLayoutManager(std::make_unique<views::FlexLayout>())
++        ->SetOrientation(views::LayoutOrientation::kVertical);
++    views::View* row = nullptr;
++    for (size_t i = 0; i < workspaces::kWorkspaceIcons.size(); ++i) {
++      if (i % kPickerColumns == 0) {
++        row = AddChildView(std::make_unique<views::View>());
++        row->SetLayoutManager(std::make_unique<views::FlexLayout>());
++      }
++      const std::u16string icon(workspaces::kWorkspaceIcons[i]);
++      auto button = std::make_unique<WorkspaceChipButton>(
++          base::BindRepeating(&WorkspaceIconGrid::Pick, base::Unretained(this),
++                              icon),
++          icon);
++      if (icon == selected_icon) {
++        button->SetBackground(views::CreateRoundedRectBackground(
++            ui::kColorSubtleEmphasisBackground, kCornerRadius));
++      }
++      row->AddChildView(std::move(button));
++    }
++  }
++  WorkspaceIconGrid(const WorkspaceIconGrid&) = delete;
++  WorkspaceIconGrid& operator=(const WorkspaceIconGrid&) = delete;
++  ~WorkspaceIconGrid() override = default;
++
++ private:
++  void Pick(const std::u16string& icon) {
++    if (callback_) {
++      std::move(callback_).Run(icon);
++    }
++    GetWidget()->Close();
++  }
++
++  IconPickedCallback callback_;
++  std::unique_ptr<views::BubbleDialogDelegate::CloseOnDeactivatePin>
++      parent_pin_;
++};
++
++BEGIN_METADATA(WorkspaceIconGrid)
++END_METADATA
++
++// Keeps the vertical tab strip from collapsing on hover-out while a bubble
++// anchored in it is open. Returns null if `anchor` is not in a browser window.
++std::unique_ptr<ExpandOnHoverLock> KeepTabStripState(views::View* anchor) {
++  BrowserView* browser_view = BrowserView::GetBrowserViewForNativeWindow(
++      anchor->GetWidget()->GetNativeWindow());
++  if (!browser_view || !browser_view->tab_strip_view()) {
++    return nullptr;
++  }
++  return browser_view->tab_strip_view()->GetExpandOnHoverLock(
++      ExpandOnHoverLockType::kKeepCurrentState);
++}
++
++// Shows the icon picker below `anchor`. Keeps a bubble that contains `anchor`
++// open while the picker has focus.
++void ShowIconPicker(views::View* anchor,
++                    std::u16string_view selected_icon,
++                    IconPickedCallback callback) {
++  std::unique_ptr<views::BubbleDialogDelegate::CloseOnDeactivatePin> pin;
++  if (auto* parent =
++          anchor->GetWidget()->widget_delegate()->AsBubbleDialogDelegate()) {
++    pin = parent->PreventCloseOnDeactivate();
++  }
++  std::unique_ptr<ui::DialogModel> model =
++      ui::DialogModel::Builder()
++          .SetAccessibleTitle(
++              l10n_util::GetStringUTF16(IDS_WORKSPACE_ICON_LABEL))
++          .OverrideShowCloseButton(false)
++          .SetDialogDestroyingCallback(
++              base::DoNothingWithBoundArgs(KeepTabStripState(anchor)))
++          .AddCustomField(
++              std::make_unique<views::BubbleDialogModelHost::CustomView>(
++                  std::make_unique<WorkspaceIconGrid>(
++                      selected_icon, std::move(callback), std::move(pin)),
++                  views::BubbleDialogModelHost::FieldType::kControl))
++          .Build();
++  auto bubble = std::make_unique<views::BubbleDialogModelHost>(
++      std::move(model), anchor, views::BubbleBorder::TOP_LEFT);
++  views::BubbleDialogDelegate::CreateBubbleDeprecated(
++      std::move(bubble), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET)
++      ->Show();
++}
++
++// Icon field of the workspace editor. Clicking it opens the icon picker.
++class WorkspaceIconButton : public WorkspaceChipButton {
++  METADATA_HEADER(WorkspaceIconButton, WorkspaceChipButton)
++
++ public:
++  explicit WorkspaceIconButton(std::u16string_view icon)
++      : WorkspaceChipButton(base::BindRepeating(&WorkspaceIconButton::OnPressed,
++                                                base::Unretained(this)),
++                            icon) {
++    SetTooltipText(l10n_util::GetStringUTF16(IDS_WORKSPACE_ICON_LABEL));
++  }
++  WorkspaceIconButton(const WorkspaceIconButton&) = delete;
++  WorkspaceIconButton& operator=(const WorkspaceIconButton&) = delete;
++  ~WorkspaceIconButton() override = default;
++
++ private:
++  void OnPressed() {
++    ShowIconPicker(this, icon(),
++                   base::BindOnce(&WorkspaceIconButton::SetIcon,
++                                  weak_factory_.GetWeakPtr()));
++  }
++
++  void SetIcon(const std::u16string& icon) {
++    WorkspaceChipButton::SetIcon(icon);
++  }
++
++  base::WeakPtrFactory<WorkspaceIconButton> weak_factory_{this};
++};
++
++BEGIN_METADATA(WorkspaceIconButton)
++END_METADATA
++
++// Shows the workspace context menu (edit, new, close) and the edit bubble.
++class WorkspaceMenu : public ui::SimpleMenuModel::Delegate {
++ public:
++  explicit WorkspaceMenu(workspaces::WorkspaceController* controller)
++      : controller_(controller) {}
++  WorkspaceMenu(const WorkspaceMenu&) = delete;
++  WorkspaceMenu& operator=(const WorkspaceMenu&) = delete;
++  ~WorkspaceMenu() override = default;
++
++  bool IsRunning() const { return runner_ && runner_->IsRunning(); }
++
++  void Show(views::View* anchor,
++            const std::string& workspace_id,
++            const gfx::Rect& bounds,
++            views::MenuAnchorPosition position,
++            ui::mojom::MenuSourceType source_type) {
++    workspace_id_ = workspace_id;
++    anchor_.SetView(anchor);
++    model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    model_->AddItemWithStringId(kEditCommand, IDS_WORKSPACE_EDIT);
++    model_->AddItemWithStringId(kNewCommand, IDS_WORKSPACE_NEW_TOOLTIP);
++    model_->AddSeparator(ui::NORMAL_SEPARATOR);
++    model_->AddItemWithStringId(kCloseCommand, IDS_WORKSPACE_CLOSE);
++    runner_ = std::make_unique<views::MenuRunner>(
++        model_.get(),
++        views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU);
++    runner_->RunMenuAt(anchor->GetWidget(), nullptr, bounds, position,
++                       source_type);
++  }
++
++  // ui::SimpleMenuModel::Delegate:
++  bool IsCommandIdEnabled(int command_id) const override {
++    return command_id != kCloseCommand ||
++           controller_->GetWorkspaces().size() > 1;
++  }
++
++  void ExecuteCommand(int command_id, int event_flags) override {
++    switch (command_id) {
++      case kEditCommand:
++        ShowEditor();
++        break;
++      case kNewCommand:
++        controller_->CreateWorkspace();
++        break;
++      case kCloseCommand:
++        controller_->CloseWorkspace(workspace_id_);
++        break;
++    }
++  }
++
++ private:
++  void ShowEditor() {
++    const auto& workspaces = controller_->GetWorkspaces();
++    const auto it = std::ranges::find(workspaces, workspace_id_,
++                                      &workspaces::Workspace::id);
++    if (it == workspaces.end() || !anchor_.view()) {
++      return;
++    }
++    auto icon_row = std::make_unique<views::FlexLayoutView>();
++    WorkspaceIconButton* icon_button = icon_row->AddChildView(
++        std::make_unique<WorkspaceIconButton>(IconText(*it)));
++    auto color_model = std::make_unique<ColorComboboxModel>(it->color);
++    const ColorComboboxModel* colors = color_model.get();
++    auto model_holder = std::make_unique<raw_ptr<ui::DialogModel>>();
++    raw_ptr<ui::DialogModel>* model_ptr = model_holder.get();
++    std::unique_ptr<ui::DialogModel> model =
++        ui::DialogModel::Builder()
++            .SetTitle(l10n_util::GetStringUTF16(IDS_WORKSPACE_EDIT))
++            .SetDialogDestroyingCallback(
++                base::DoNothingWithBoundArgs(KeepTabStripState(anchor_.view())))
++            .AddCustomField(
++                std::make_unique<views::BubbleDialogModelHost::CustomView>(
++                    std::move(icon_row),
++                    views::BubbleDialogModelHost::FieldType::kControl,
++                    icon_button),
++                kWorkspaceIconFieldId)
++            .AddTextfield(kWorkspaceNameFieldId,
++                          l10n_util::GetStringUTF16(IDS_WORKSPACE_NAME_LABEL),
++                          it->name)
++            .AddCombobox(kWorkspaceColorFieldId,
++                         l10n_util::GetStringUTF16(IDS_WORKSPACE_COLOR_LABEL),
++                         std::move(color_model))
++            .AddOkButton(base::BindOnce(
++                &WorkspaceMenu::ApplyEdit, weak_factory_.GetWeakPtr(), *it,
++                std::move(model_holder), icon_button, colors))
++            .AddCancelButton(base::DoNothing())
++            .SetInitiallyFocusedField(kWorkspaceNameFieldId)
++            .Build();
++    *model_ptr = model.get();
++    auto bubble = std::make_unique<views::BubbleDialogModelHost>(
++        std::move(model), anchor_.view(), views::BubbleBorder::TOP_LEFT);
++    views::BubbleDialogDelegate::CreateBubbleDeprecated(
++        std::move(bubble), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET)
++        ->Show();
++  }
++
++  void ApplyEdit(workspaces::Workspace workspace,
++                 std::unique_ptr<raw_ptr<ui::DialogModel>> model,
++                 const WorkspaceIconButton* icon,
++                 const ColorComboboxModel* colors) {
++    ui::DialogModel* dialog = model->get();
++    const std::u16string name = std::u16string(base::TrimWhitespace(
++        dialog->GetTextfieldByUniqueId(kWorkspaceNameFieldId)->text(),
++        base::TRIM_ALL));
++    if (!name.empty()) {
++      workspace.name = name;
++    }
++    workspace.icon = icon->icon();
++    workspace.color =
++        colors->GetColorAt(dialog->GetComboboxByUniqueId(kWorkspaceColorFieldId)
++                               ->selected_index());
++    controller_->UpdateWorkspace(workspace);
++  }
++
++  const raw_ptr<workspaces::WorkspaceController> controller_;
++  std::string workspace_id_;
++  views::ViewTracker anchor_;
++  std::unique_ptr<ui::SimpleMenuModel> model_;
++  std::unique_ptr<views::MenuRunner> runner_;
++  base::WeakPtrFactory<WorkspaceMenu> weak_factory_{this};
++};
++
++// The row of workspace icons at the bottom of the vertical tab strip.
++class WorkspaceSwitcherView : public views::FlexLayoutView,
++                              public workspaces::WorkspaceController::Observer {
++  METADATA_HEADER(WorkspaceSwitcherView, views::FlexLayoutView)
++
++ public:
++  explicit WorkspaceSwitcherView(BrowserWindowInterface* browser)
++      : browser_(browser),
++        controller_(workspaces::WorkspaceController::From(browser)) {
++    CHECK(controller_);
++    SetOrientation(views::LayoutOrientation::kHorizontal);
++    SetCrossAxisAlignment(views::LayoutAlignment::kCenter);
++    SetInteriorMargin(gfx::Insets::VH(6, 0));
++    GetViewAccessibility().SetRole(ax::mojom::Role::kToolbar);
++    GetViewAccessibility().SetName(
++        l10n_util::GetStringUTF16(IDS_WORKSPACE_SWITCHER_ACCNAME));
++
++    auto chips = std::make_unique<views::FlexLayoutView>();
++    chips->SetOrientation(views::LayoutOrientation::kHorizontal);
++    chips->SetCrossAxisAlignment(views::LayoutAlignment::kCenter);
++    chips->SetMainAxisAlignment(views::LayoutAlignment::kCenter);
++    chips->SetDefault(views::kMarginsKey, gfx::Insets::VH(0, 2));
++    chips->SetProperty(
++        views::kFlexBehaviorKey,
++        views::FlexSpecification(views::LayoutOrientation::kHorizontal,
++                                 views::MinimumFlexSizeRule::kScaleToZero,
++                                 views::MaximumFlexSizeRule::kUnbounded));
++    chips_ = AddChildView(std::move(chips));
++
++    const std::u16string new_workspace_label =
++        l10n_util::GetStringUTF16(IDS_WORKSPACE_NEW_TOOLTIP);
++    auto add_button = views::CreateVectorImageButtonWithNativeTheme(
++        base::BindRepeating(&WorkspaceSwitcherView::CreateNewWorkspace,
++                            base::Unretained(this)),
++        vector_icons::kAdd2Icon, kAddIconSize);
++    add_button->SetBorder(views::CreateEmptyBorder(0));
++    add_button->SetPreferredSize(gfx::Size(kAddButtonSize, kAddButtonSize));
++    views::InstallRoundRectHighlightPathGenerator(
++        add_button.get(), gfx::Insets(), kCornerRadius);
++    views::InkDrop::Get(add_button.get())->SetHighlightOpacity(0.16f);
++    add_button->SetTooltipText(new_workspace_label);
++    add_button->GetViewAccessibility().SetName(new_workspace_label);
++    add_button_ = AddChildView(std::move(add_button));
++
++    if (auto* state = tabs::VerticalTabStripStateController::From(browser)) {
++      collapse_changed_subscription_ = state->RegisterOnCollapseChanged(
++          base::BindRepeating(&WorkspaceSwitcherView::OnCollapseChanged,
++                              base::Unretained(this)));
++    }
++
++    controller_observation_.Observe(controller_);
++    Rebuild();
++  }
++
++  WorkspaceSwitcherView(const WorkspaceSwitcherView&) = delete;
++  WorkspaceSwitcherView& operator=(const WorkspaceSwitcherView&) = delete;
++  ~WorkspaceSwitcherView() override = default;
++
++  void OnWorkspacesChanged() override { ScheduleRebuild(); }
++
++  void OnActiveWorkspaceChanged() override { ScheduleRebuild(); }
++
++  void OnThemeChanged() override {
++    views::FlexLayoutView::OnThemeChanged();
++    ScheduleRebuild();
++  }
++
++ private:
++  void OnCollapseChanged(tabs::VerticalTabStripCollapseState state) {
++    ScheduleRebuild();
++  }
++
++  void ScheduleRebuild() {
++    if (rebuild_scheduled_) {
++      return;
++    }
++    rebuild_scheduled_ = true;
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&WorkspaceSwitcherView::Rebuild,
++                                  weak_factory_.GetWeakPtr()));
++  }
++
++  void Rebuild() {
++    rebuild_scheduled_ = false;
++    const bool collapsed = IsCollapsed(browser_);
++    chips_->RemoveAllChildViews();
++    add_button_->SetVisible(!collapsed);
++
++    const ui::ColorProvider* provider = GetColorProvider();
++    const workspaces::Workspace* active = controller_->GetActiveWorkspace();
++    for (const auto& workspace : controller_->GetWorkspaces()) {
++      const bool is_active = active && active->id == workspace.id;
++      if (collapsed && !is_active) {
++        continue;
++      }
++      auto chip = std::make_unique<WorkspaceChipButton>(
++          base::BindRepeating(&WorkspaceSwitcherView::ActivateWorkspace,
++                              base::Unretained(this), workspace.id),
++          IconText(workspace));
++      chip->SetTooltipText(workspace.name);
++      chip->GetViewAccessibility().SetName(l10n_util::GetStringFUTF16(
++          IDS_WORKSPACE_ITEM_ACCNAME, workspace.name));
++      if (provider) {
++        const SkColor color = WorkspaceColor(provider, workspace.color);
++        const SkColor text = provider->GetColor(ui::kColorLabelForeground);
++        if (is_active) {
++          chip->SetBackground(views::CreateRoundedRectBackground(
++              SkColorSetA(color, kActiveChipAlpha), kCornerRadius));
++          chip->SetIconColor(text);
++        } else {
++          chip->SetIconColor(SkColorSetA(text, kInactiveTextAlpha));
++        }
++      }
++      chips_->AddChildView(std::move(chip));
++    }
++    InvalidateLayout();
++  }
++
++  void ActivateWorkspace(const std::string& id) {
++    controller_->ActivateWorkspace(id);
++  }
++
++  void CreateNewWorkspace() { controller_->CreateWorkspace(); }
++
++  const raw_ptr<BrowserWindowInterface> browser_;
++  const raw_ptr<workspaces::WorkspaceController> controller_;
++  raw_ptr<views::FlexLayoutView> chips_ = nullptr;
++  raw_ptr<views::ImageButton> add_button_ = nullptr;
++  base::CallbackListSubscription collapse_changed_subscription_;
++  base::ScopedObservation<workspaces::WorkspaceController,
++                          workspaces::WorkspaceController::Observer>
++      controller_observation_{this};
++  bool rebuild_scheduled_ = false;
++  base::WeakPtrFactory<WorkspaceSwitcherView> weak_factory_{this};
++};
++
++BEGIN_METADATA(WorkspaceSwitcherView)
++END_METADATA
++
++// Icon and name of the active workspace, shown above its tabs. Clicking the
++// icon opens the icon picker, clicking elsewhere opens the workspace menu.
++class WorkspaceHeaderView : public views::Button,
++                            public workspaces::WorkspaceController::Observer,
++                            public views::ContextMenuController {
++  METADATA_HEADER(WorkspaceHeaderView, views::Button)
++
++ public:
++  explicit WorkspaceHeaderView(BrowserWindowInterface* browser)
++      : Button(base::BindRepeating(&WorkspaceHeaderView::OnPressed,
++                                   base::Unretained(this))),
++        browser_(browser),
++        controller_(workspaces::WorkspaceController::From(browser)),
++        menu_(controller_) {
++    CHECK(controller_);
++    SetLayoutManager(std::make_unique<views::FlexLayout>())
++        ->SetOrientation(views::LayoutOrientation::kHorizontal)
++        .SetCrossAxisAlignment(views::LayoutAlignment::kCenter)
++        .SetInteriorMargin(gfx::Insets::VH(0, 8));
++    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
++                                                  kCornerRadius);
++    set_context_menu_controller(this);
++
++    icon_ = AddChildView(std::make_unique<WorkspaceChipButton>(
++        base::BindRepeating(&WorkspaceHeaderView::OnIconPressed,
++                            base::Unretained(this)),
++        std::u16string()));
++    icon_->set_context_menu_controller(this);
++    icon_->SetTooltipText(l10n_util::GetStringUTF16(IDS_WORKSPACE_ICON_LABEL));
++    icon_->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(0, -6, 0, 2));
++
++    name_ = AddChildView(std::make_unique<views::Label>());
++    name_->SetCanProcessEventsWithinSubtree(false);
++    name_->SetSubpixelRenderingEnabled(false);
++    name_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++    name_->SetElideBehavior(gfx::ELIDE_TAIL);
++    name_->SetFontList(
++        name_->font_list().DeriveWithWeight(gfx::Font::Weight::SEMIBOLD));
++    name_->SetProperty(
++        views::kFlexBehaviorKey,
++        views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
++                                 views::MaximumFlexSizeRule::kUnbounded));
++
++    if (auto* state = tabs::VerticalTabStripStateController::From(browser)) {
++      collapse_changed_subscription_ =
++          state->RegisterOnCollapseChanged(base::BindRepeating(
++              &WorkspaceHeaderView::OnCollapseChanged, base::Unretained(this)));
++    }
++    controller_observation_.Observe(controller_);
++    Update();
++  }
++
++  WorkspaceHeaderView(const WorkspaceHeaderView&) = delete;
++  WorkspaceHeaderView& operator=(const WorkspaceHeaderView&) = delete;
++  ~WorkspaceHeaderView() override = default;
++
++  gfx::Size CalculatePreferredSize(
++      const views::SizeBounds& available_size) const override {
++    return gfx::Size(0, kHeaderHeight);
++  }
++
++  void OnWorkspacesChanged() override { Update(); }
++
++  void OnActiveWorkspaceChanged() override { Update(); }
++
++  void OnThemeChanged() override {
++    views::Button::OnThemeChanged();
++    Update();
++  }
++
++ private:
++  // views::ContextMenuController:
++  void ShowContextMenuForViewImpl(
++      views::View* source,
++      const gfx::Point& point,
++      ui::mojom::MenuSourceType source_type) override {
++    ShowMenu(gfx::Rect(point, gfx::Size()), views::MenuAnchorPosition::kTopLeft,
++             source_type);
++  }
++
++  void OnPressed(const ui::Event& event) {
++    ShowMenu(GetBoundsInScreen(), views::MenuAnchorPosition::kTopLeft,
++             ui::mojom::MenuSourceType::kMouse);
++  }
++
++  void OnIconPressed() {
++    if (const workspaces::Workspace* active =
++            controller_->GetActiveWorkspace()) {
++      ShowIconPicker(icon_, active->icon,
++                     base::BindOnce(&WorkspaceHeaderView::SetIcon,
++                                    weak_factory_.GetWeakPtr(), active->id));
++    }
++  }
++
++  void SetIcon(const std::string& id, const std::u16string& icon) {
++    const auto& workspaces = controller_->GetWorkspaces();
++    const auto it =
++        std::ranges::find(workspaces, id, &workspaces::Workspace::id);
++    if (it == workspaces.end()) {
++      return;
++    }
++    workspaces::Workspace workspace = *it;
++    workspace.icon = icon;
++    controller_->UpdateWorkspace(workspace);
++  }
++
++  void ShowMenu(const gfx::Rect& bounds,
++                views::MenuAnchorPosition position,
++                ui::mojom::MenuSourceType source_type) {
++    if (const workspaces::Workspace* active =
++            controller_->GetActiveWorkspace()) {
++      menu_.Show(this, active->id, bounds, position, source_type);
++    }
++  }
++
++  void OnCollapseChanged(tabs::VerticalTabStripCollapseState state) {
++    Update();
++  }
++
++  void Update() {
++    const bool visible = controller_->IsFilteringTabs();
++    if (GetVisible() != visible) {
++      SetVisible(visible);
++    }
++    const workspaces::Workspace* active = controller_->GetActiveWorkspace();
++    if (!active) {
++      return;
++    }
++    const bool collapsed = IsCollapsed(browser_);
++    icon_->SetIcon(IconText(*active));
++    name_->SetText(active->name);
++    name_->SetVisible(!collapsed);
++    GetViewAccessibility().SetName(
++        l10n_util::GetStringFUTF16(IDS_WORKSPACE_ITEM_ACCNAME, active->name));
++    SetTooltipText(active->name);
++    if (const ui::ColorProvider* provider = GetColorProvider()) {
++      const SkColor color = WorkspaceColor(provider, active->color);
++      SetBackground(views::CreateRoundedRectBackground(
++          SkColorSetA(color, kHeaderAlpha), kCornerRadius));
++      icon_->SetIconColor(ui::kColorLabelForeground);
++      name_->SetEnabledColor(provider->GetColor(ui::kColorLabelForeground));
++    }
++  }
++
++  const raw_ptr<BrowserWindowInterface> browser_;
++  const raw_ptr<workspaces::WorkspaceController> controller_;
++  WorkspaceMenu menu_;
++  raw_ptr<WorkspaceChipButton> icon_ = nullptr;
++  raw_ptr<views::Label> name_ = nullptr;
++  base::CallbackListSubscription collapse_changed_subscription_;
++  base::ScopedObservation<workspaces::WorkspaceController,
++                          workspaces::WorkspaceController::Observer>
++      controller_observation_{this};
++  base::WeakPtrFactory<WorkspaceHeaderView> weak_factory_{this};
++};
++
++BEGIN_METADATA(WorkspaceHeaderView)
++END_METADATA
++
++}  // namespace
++
++namespace workspaces {
++
++std::unique_ptr<views::View> CreateWorkspaceSwitcherView(
++    BrowserWindowInterface* browser) {
++  return std::make_unique<WorkspaceSwitcherView>(browser);
++}
++
++std::unique_ptr<views::View> CreateWorkspaceHeaderView(
++    BrowserWindowInterface* browser) {
++  return std::make_unique<WorkspaceHeaderView>(browser);
++}
++
++}  // namespace workspaces
+diff --git a/chrome/browser/ui/views/workspaces/workspace_switcher_view.h b/chrome/browser/ui/views/workspaces/workspace_switcher_view.h
+new file mode 100644
+index 000000000..1f9cf1cc8
+--- /dev/null
++++ b/chrome/browser/ui/views/workspaces/workspace_switcher_view.h
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_SWITCHER_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_SWITCHER_VIEW_H_
++
++#include <memory>
++
++#include "ui/views/view.h"
++
++class BrowserWindowInterface;
++
++namespace workspaces {
++
++std::unique_ptr<views::View> CreateWorkspaceSwitcherView(
++    BrowserWindowInterface* browser);
++
++std::unique_ptr<views::View> CreateWorkspaceHeaderView(
++    BrowserWindowInterface* browser);
++
++}  // namespace workspaces
++
++#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_SWITCHER_VIEW_H_
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc b/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
+@@ -4,11 +4,14 @@
+ 
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.h"
+ 
++#include "base/time/time.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
++#include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "ui/base/l10n/l10n_util.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/views/animation/ink_drop.h"
+ 
+ namespace {
+ 
+@@ -24,7 +27,12 @@
+           GetLayoutConstant(LayoutConstant::kVerticalTabStripNewTabButtonSize),
+           kIconSize) {
+   SetCornerRadius(GetLayoutConstant(LayoutConstant::kVerticalTabCornerRadius));
+-  SetForegroundColorId(kColorToolbarButtonIconDisabled);
++  SetForegroundColorId(kColorToolbarButtonIcon);
++  ConfigureToolbarInkdropForRefresh2023(
++      this, kColorTabStripControlButtonInkDrop,
++      kColorTabStripControlButtonInkDropRipple);
++  views::InkDrop::Get(this)->GetInkDrop()->SetHoverHighlightFadeDuration(
++      base::Milliseconds(180));
+   SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
+   SetLabelInsets(gfx::Insets::VH(kBasePadding, kBigPadding),
+                  gfx::Insets::VH(kBasePadding, kBigPadding));
+diff --git a/chrome/browser/ui/views/workspaces/workspace_vector_icons.h b/chrome/browser/ui/views/workspaces/workspace_vector_icons.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/workspaces/workspace_vector_icons.h
+@@ -0,0 +1,1565 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++// Icon paths: https://github.com/lucide-icons/lucide
++// Source revision: 5b44cea30b9df920d80ebe2e0a930772722ac107
++// ISC License
++//
++// Copyright (c) 2026 Lucide Icons and Contributors
++//
++// Permission to use, copy, modify, and/or distribute this software for any
++// purpose with or without fee is hereby granted, provided that the above
++// copyright notice and this permission notice appear in all copies.
++//
++// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++//
++// ---
++//
++// The following Lucide icons are derived from the Feather project:
++//
++// airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-
++// circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle,
++// arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left,
++// arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down,
++// chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left,
++// chevrons-right, chevrons-up, circle, clipboard, clock, code, columns,
++// command, compass, corner-down-left, corner-down-right, corner-left-down,
++// corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-
++// up-right, crosshair, database, divide-circle, divide-square, dollar-sign,
++// download, external-link, feather, frown, hash, headphones, help-circle,
++// info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in,
++// log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square,
++// minus, monitor, moon, more-horizontal, more-vertical, move, music,
++// navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-
++// square, plus, power, radio, rss, search, server, share, shopping-bag,
++// sidebar, smartphone, smile, square, table-2, tablet, target, terminal,
++// trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square,
++// x, zoom-in, zoom-out
++//
++// The MIT License (MIT) (for the icons listed above)
++//
++// Copyright (c) 2013-present Cole Bemis
++//
++// Permission is hereby granted, free of charge, to any person obtaining a copy
++// of this software and associated documentation files (the "Software"), to
++// deal
++// in the Software without restriction, including without limitation the rights
++// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++// copies of the Software, and to permit persons to whom the Software is
++// furnished to do so, subject to the following conditions:
++//
++// The above copyright notice and this permission notice shall be included in
++// all
++// copies or substantial portions of the Software.
++//
++// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++// FROM,
++// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++// THE
++// SOFTWARE.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_VECTOR_ICONS_H_
++#define CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_VECTOR_ICONS_H_
++
++#include <array>
++
++#include "ui/gfx/vector_icon_types.h"
++
++namespace workspaces {
++
++inline constexpr gfx::PathElement kWorkspaceHousePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 15, 21,
++    gfx::LINE_TO, 15, 13,
++    gfx::CUBIC_TO, 15, 12.447715f, 14.552285f, 12, 14, 12,
++    gfx::LINE_TO, 10, 12,
++    gfx::CUBIC_TO, 9.447715f, 12, 9, 12.447715f, 9, 13,
++    gfx::LINE_TO, 9, 21,
++    gfx::MOVE_TO, 3, 10,
++    gfx::CUBIC_TO, 2.999859f, 9.411126f, 3.259242f, 8.852118f, 3.709f, 8.472f,
++    gfx::LINE_TO, 10.709f, 2.472f,
++    gfx::CUBIC_TO, 11.454388f, 1.842027f, 12.545612f, 1.842027f, 13.291f, 2.472f,
++    gfx::LINE_TO, 20.291f, 8.472f,
++    gfx::CUBIC_TO, 20.740758f, 8.852118f, 21.000141f, 9.411126f, 21, 10,
++    gfx::LINE_TO, 21, 19,
++    gfx::CUBIC_TO, 21, 20.104569f, 20.104569f, 21, 19, 21,
++    gfx::LINE_TO, 5, 21,
++    gfx::CUBIC_TO, 3.895431f, 21, 3, 20.104569f, 3, 19,
++    gfx::LINE_TO, 3, 10,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceHouseReps[] = {
++    {kWorkspaceHousePath}};
++inline constexpr gfx::VectorIcon kWorkspaceHouseIcon = {
++    kWorkspaceHouseReps, std::size(kWorkspaceHouseReps), "workspace_house"};
++
++inline constexpr gfx::PathElement kWorkspaceBriefcaseBusinessPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 12,
++    gfx::LINE_TO, 12.01f, 12,
++    gfx::MOVE_TO, 16, 6,
++    gfx::LINE_TO, 16, 4,
++    gfx::CUBIC_TO, 16, 2.895431f, 15.104569f, 2, 14, 2,
++    gfx::LINE_TO, 10, 2,
++    gfx::CUBIC_TO, 8.895431f, 2, 8, 2.895431f, 8, 4,
++    gfx::LINE_TO, 8, 6,
++    gfx::MOVE_TO, 22, 13,
++    gfx::CUBIC_TO, 15.934654f, 17.004401f, 8.065346f, 17.004401f, 2, 13,
++    gfx::MOVE_TO, 4, 6,
++    gfx::LINE_TO, 20, 6,
++    gfx::CUBIC_TO, 21.104569f, 6, 22, 6.895431f, 22, 8,
++    gfx::LINE_TO, 22, 18,
++    gfx::CUBIC_TO, 22, 19.104569f, 21.104569f, 20, 20, 20,
++    gfx::LINE_TO, 4, 20,
++    gfx::CUBIC_TO, 2.895431f, 20, 2, 19.104569f, 2, 18,
++    gfx::LINE_TO, 2, 8,
++    gfx::CUBIC_TO, 2, 6.895431f, 2.895431f, 6, 4, 6,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceBriefcaseBusinessReps[] = {
++    {kWorkspaceBriefcaseBusinessPath}};
++inline constexpr gfx::VectorIcon kWorkspaceBriefcaseBusinessIcon = {
++    kWorkspaceBriefcaseBusinessReps, std::size(kWorkspaceBriefcaseBusinessReps),
++    "workspace_briefcase_business"};
++
++inline constexpr gfx::PathElement kWorkspaceLaptopPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 18, 5,
++    gfx::CUBIC_TO, 19.104569f, 5, 20, 5.895431f, 20, 7,
++    gfx::LINE_TO, 20, 15.526f,
++    gfx::CUBIC_TO, 19.999865f, 15.837428f, 20.072459f, 16.144584f, 20.212f, 16.423f,
++    gfx::LINE_TO, 21.28f, 18.55f,
++    gfx::CUBIC_TO, 21.43678f, 18.861109f, 21.420347f, 19.231389f, 21.236624f, 19.527387f,
++    gfx::CUBIC_TO, 21.052901f, 19.823385f, 20.728372f, 20.002433f, 20.38f, 20,
++    gfx::LINE_TO, 3.62f, 20,
++    gfx::CUBIC_TO, 3.271628f, 20.002433f, 2.947099f, 19.823385f, 2.763376f, 19.527387f,
++    gfx::CUBIC_TO, 2.579653f, 19.231389f, 2.56322f, 18.861109f, 2.72f, 18.55f,
++    gfx::LINE_TO, 3.788f, 16.423f,
++    gfx::CUBIC_TO, 3.927541f, 16.144584f, 4.000135f, 15.837428f, 4, 15.526f,
++    gfx::LINE_TO, 4, 7,
++    gfx::CUBIC_TO, 4, 5.895431f, 4.895431f, 5, 6, 5,
++    gfx::LINE_TO, 18, 5,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 20.054f, 15.987f,
++    gfx::LINE_TO, 3.946f, 15.987f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceLaptopReps[] = {
++    {kWorkspaceLaptopPath}};
++inline constexpr gfx::VectorIcon kWorkspaceLaptopIcon = {
++    kWorkspaceLaptopReps, std::size(kWorkspaceLaptopReps), "workspace_laptop"};
++
++inline constexpr gfx::PathElement kWorkspaceBookOpenPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 5,
++    gfx::LINE_TO, 12, 21,
++    gfx::MOVE_TO, 20.001f, 19,
++    gfx::CUBIC_TO, 21.105179f, 18.999448f, 22, 18.104179f, 22, 17,
++    gfx::LINE_TO, 22, 5,
++    gfx::CUBIC_TO, 22, 3.895821f, 21.105179f, 3.000552f, 20.001f, 3,
++    gfx::LINE_TO, 16, 3.002f,
++    gfx::CUBIC_TO, 14.426565f, 3.001528f, 12.94469f, 3.741724f, 12, 5,
++    gfx::CUBIC_TO, 11.055728f, 3.740971f, 9.573787f, 3, 8, 3,
++    gfx::LINE_TO, 4, 3,
++    gfx::CUBIC_TO, 2.895431f, 3, 2, 3.895431f, 2, 5,
++    gfx::LINE_TO, 2, 17,
++    gfx::CUBIC_TO, 2, 18.104179f, 2.894821f, 18.999448f, 3.999f, 19,
++    gfx::LINE_TO, 8, 19,
++    gfx::CUBIC_TO, 9.573787f, 19, 11.055728f, 19.740971f, 12, 21,
++    gfx::CUBIC_TO, 12.944272f, 19.740971f, 14.426213f, 19, 16, 19,
++    gfx::LINE_TO, 20.001f, 19,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceBookOpenReps[] = {
++    {kWorkspaceBookOpenPath}};
++inline constexpr gfx::VectorIcon kWorkspaceBookOpenIcon = {
++    kWorkspaceBookOpenReps, std::size(kWorkspaceBookOpenReps),
++    "workspace_book_open"};
++
++inline constexpr gfx::PathElement kWorkspaceGraduationCapPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 21.42f, 10.922f,
++    gfx::CUBIC_TO, 21.785915f, 10.760576f, 22.020459f, 10.396656f, 22.016325f, 9.996737f,
++    gfx::CUBIC_TO, 22.01219f, 9.596819f, 21.770174f, 9.237826f, 21.401f, 9.084f,
++    gfx::LINE_TO, 12.83f, 5.18f,
++    gfx::CUBIC_TO, 12.302794f, 4.939524f, 11.697206f, 4.939524f, 11.17f, 5.18f,
++    gfx::LINE_TO, 2.6f, 9.08f,
++    gfx::CUBIC_TO, 2.236206f, 9.23933f, 2.001178f, 9.598845f, 2.001178f, 9.996f,
++    gfx::CUBIC_TO, 2.001178f, 10.393155f, 2.236206f, 10.75267f, 2.6f, 10.912f,
++    gfx::LINE_TO, 11.17f, 14.82f,
++    gfx::CUBIC_TO, 11.697206f, 15.060476f, 12.302794f, 15.060476f, 12.83f, 14.82f,
++    gfx::LINE_TO, 21.42f, 10.922f,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 22, 10,
++    gfx::LINE_TO, 22, 16,
++    gfx::MOVE_TO, 6, 12.5f,
++    gfx::LINE_TO, 6, 16,
++    gfx::CUBIC_TO, 6, 17.656854f, 8.686292f, 19, 12, 19,
++    gfx::CUBIC_TO, 15.313708f, 19, 18, 17.656854f, 18, 16,
++    gfx::LINE_TO, 18, 12.5f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceGraduationCapReps[] = {
++    {kWorkspaceGraduationCapPath}};
++inline constexpr gfx::VectorIcon kWorkspaceGraduationCapIcon = {
++    kWorkspaceGraduationCapReps, std::size(kWorkspaceGraduationCapReps),
++    "workspace_graduation_cap"};
++
++inline constexpr gfx::PathElement kWorkspaceGamepad2Path[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 6, 11,
++    gfx::LINE_TO, 10, 11,
++    gfx::MOVE_TO, 8, 9,
++    gfx::LINE_TO, 8, 13,
++    gfx::MOVE_TO, 15, 12,
++    gfx::LINE_TO, 15.01f, 12,
++    gfx::MOVE_TO, 18, 10,
++    gfx::LINE_TO, 18.01f, 10,
++    gfx::MOVE_TO, 17.32f, 5,
++    gfx::LINE_TO, 6.68f, 5,
++    gfx::CUBIC_TO, 4.629961f, 5.000478f, 2.912129f, 6.550759f, 2.702f, 8.59f,
++    gfx::CUBIC_TO, 2.696f, 8.642f, 2.692f, 8.691f, 2.685f, 8.742f,
++    gfx::CUBIC_TO, 2.604f, 9.416f, 2, 14.456f, 2, 16,
++    gfx::CUBIC_TO, 2, 17.656854f, 3.343146f, 19, 5, 19,
++    gfx::CUBIC_TO, 6, 19, 6.5f, 18.5f, 7, 18,
++    gfx::LINE_TO, 8.414f, 16.586f,
++    gfx::CUBIC_TO, 8.788985f, 16.210901f, 9.29761f, 16.000113f, 9.828f, 16,
++    gfx::LINE_TO, 14.172f, 16,
++    gfx::CUBIC_TO, 14.70239f, 16.000113f, 15.211015f, 16.210901f, 15.586f, 16.586f,
++    gfx::LINE_TO, 17, 18,
++    gfx::CUBIC_TO, 17.5f, 18.5f, 18, 19, 19, 19,
++    gfx::CUBIC_TO, 20.656854f, 19, 22, 17.656854f, 22, 16,
++    gfx::CUBIC_TO, 22, 14.455f, 21.396f, 9.416f, 21.315f, 8.742f,
++    gfx::CUBIC_TO, 21.308f, 8.692f, 21.304f, 8.642f, 21.298f, 8.591f,
++    gfx::CUBIC_TO, 21.088348f, 6.551363f, 19.370384f, 5.000531f, 17.32f, 5,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceGamepad2Reps[] = {
++    {kWorkspaceGamepad2Path}};
++inline constexpr gfx::VectorIcon kWorkspaceGamepad2Icon = {
++    kWorkspaceGamepad2Reps, std::size(kWorkspaceGamepad2Reps),
++    "workspace_gamepad_2"};
++
++inline constexpr gfx::PathElement kWorkspaceMusicPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 9, 18,
++    gfx::LINE_TO, 9, 5,
++    gfx::LINE_TO, 21, 3,
++    gfx::LINE_TO, 21, 16,
++    gfx::MOVE_TO, 3, 18,
++    gfx::CUBIC_TO, 3, 16.343146f, 4.343146f, 15, 6, 15,
++    gfx::CUBIC_TO, 7.656854f, 15, 9, 16.343146f, 9, 18,
++    gfx::CUBIC_TO, 9, 19.656854f, 7.656854f, 21, 6, 21,
++    gfx::CUBIC_TO, 4.343146f, 21, 3, 19.656854f, 3, 18,
++    gfx::MOVE_TO, 15, 16,
++    gfx::CUBIC_TO, 15, 14.343146f, 16.343146f, 13, 18, 13,
++    gfx::CUBIC_TO, 19.656854f, 13, 21, 14.343146f, 21, 16,
++    gfx::CUBIC_TO, 21, 17.656854f, 19.656854f, 19, 18, 19,
++    gfx::CUBIC_TO, 16.343146f, 19, 15, 17.656854f, 15, 16,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceMusicReps[] = {
++    {kWorkspaceMusicPath}};
++inline constexpr gfx::VectorIcon kWorkspaceMusicIcon = {
++    kWorkspaceMusicReps, std::size(kWorkspaceMusicReps), "workspace_music"};
++
++inline constexpr gfx::PathElement kWorkspaceClapperboardPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12.296f, 3.464f,
++    gfx::LINE_TO, 15.316f, 7.42f,
++    gfx::MOVE_TO, 20.2f, 6,
++    gfx::LINE_TO, 3, 11,
++    gfx::LINE_TO, 2.1f, 8.6f,
++    gfx::CUBIC_TO, 1.8f, 7.5f, 2.4f, 6.4f, 3.4f, 6.1f,
++    gfx::LINE_TO, 16.9f, 2.1f,
++    gfx::CUBIC_TO, 18, 1.8f, 19.1f, 2.4f, 19.4f, 3.4f,
++    gfx::LINE_TO, 20.2f, 6,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 3, 11,
++    gfx::LINE_TO, 21, 11,
++    gfx::LINE_TO, 21, 19,
++    gfx::CUBIC_TO, 21, 20.104569f, 20.104569f, 21, 19, 21,
++    gfx::LINE_TO, 5, 21,
++    gfx::CUBIC_TO, 3.895431f, 21, 3, 20.104569f, 3, 19,
++    gfx::LINE_TO, 3, 11,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 6.18f, 5.276f,
++    gfx::LINE_TO, 9.28f, 9.175f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceClapperboardReps[] = {
++    {kWorkspaceClapperboardPath}};
++inline constexpr gfx::VectorIcon kWorkspaceClapperboardIcon = {
++    kWorkspaceClapperboardReps, std::size(kWorkspaceClapperboardReps),
++    "workspace_clapperboard"};
++
++inline constexpr gfx::PathElement kWorkspacePalettePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 22,
++    gfx::CUBIC_TO, 6.477153f, 22, 2, 17.522847f, 2, 12,
++    gfx::CUBIC_TO, 2, 6.477153f, 6.477153f, 2, 12, 2,
++    gfx::CUBIC_TO, 17.522847f, 2, 22, 6.029437f, 22, 11,
++    gfx::CUBIC_TO, 22, 13.761424f, 19.761424f, 16, 17, 16,
++    gfx::LINE_TO, 14.75f, 16,
++    gfx::CUBIC_TO, 14.087149f, 16, 13.481188f, 16.374504f, 13.184752f, 16.967376f,
++    gfx::CUBIC_TO, 12.888316f, 17.560248f, 12.952289f, 18.269719f, 13.35f, 18.8f,
++    gfx::LINE_TO, 13.65f, 19.2f,
++    gfx::CUBIC_TO, 14.047711f, 19.730281f, 14.111684f, 20.439752f, 13.815248f, 21.032624f,
++    gfx::CUBIC_TO, 13.518812f, 21.625496f, 12.912851f, 22, 12.25f, 22,
++    gfx::LINE_TO, 12, 22,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 13, 6.5f,
++    gfx::CUBIC_TO, 13, 6.223858f, 13.223858f, 6, 13.5f, 6,
++    gfx::CUBIC_TO, 13.776142f, 6, 14, 6.223858f, 14, 6.5f,
++    gfx::CUBIC_TO, 14, 6.776142f, 13.776142f, 7, 13.5f, 7,
++    gfx::CUBIC_TO, 13.223858f, 7, 13, 6.776142f, 13, 6.5f,
++    gfx::MOVE_TO, 17, 10.5f,
++    gfx::CUBIC_TO, 17, 10.223858f, 17.223858f, 10, 17.5f, 10,
++    gfx::CUBIC_TO, 17.776142f, 10, 18, 10.223858f, 18, 10.5f,
++    gfx::CUBIC_TO, 18, 10.776142f, 17.776142f, 11, 17.5f, 11,
++    gfx::CUBIC_TO, 17.223858f, 11, 17, 10.776142f, 17, 10.5f,
++    gfx::MOVE_TO, 6, 12.5f,
++    gfx::CUBIC_TO, 6, 12.223858f, 6.223858f, 12, 6.5f, 12,
++    gfx::CUBIC_TO, 6.776142f, 12, 7, 12.223858f, 7, 12.5f,
++    gfx::CUBIC_TO, 7, 12.776142f, 6.776142f, 13, 6.5f, 13,
++    gfx::CUBIC_TO, 6.223858f, 13, 6, 12.776142f, 6, 12.5f,
++    gfx::MOVE_TO, 8, 7.5f,
++    gfx::CUBIC_TO, 8, 7.223858f, 8.223858f, 7, 8.5f, 7,
++    gfx::CUBIC_TO, 8.776142f, 7, 9, 7.223858f, 9, 7.5f,
++    gfx::CUBIC_TO, 9, 7.776142f, 8.776142f, 8, 8.5f, 8,
++    gfx::CUBIC_TO, 8.223858f, 8, 8, 7.776142f, 8, 7.5f,
++};
++inline constexpr gfx::VectorIconRep kWorkspacePaletteReps[] = {
++    {kWorkspacePalettePath}};
++inline constexpr gfx::VectorIcon kWorkspacePaletteIcon = {
++    kWorkspacePaletteReps, std::size(kWorkspacePaletteReps),
++    "workspace_palette"};
++
++inline constexpr gfx::PathElement kWorkspaceCameraPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 13.997f, 4,
++    gfx::CUBIC_TO, 14.732041f, 3.99999f, 15.407855f, 4.403174f, 15.757f, 5.05f,
++    gfx::LINE_TO, 16.243f, 5.95f,
++    gfx::CUBIC_TO, 16.592145f, 6.596826f, 17.267959f, 7.00001f, 18.003f, 7,
++    gfx::LINE_TO, 20, 7,
++    gfx::CUBIC_TO, 21.104569f, 7, 22, 7.895431f, 22, 9,
++    gfx::LINE_TO, 22, 18,
++    gfx::CUBIC_TO, 22, 19.104569f, 21.104569f, 20, 20, 20,
++    gfx::LINE_TO, 4, 20,
++    gfx::CUBIC_TO, 2.895431f, 20, 2, 19.104569f, 2, 18,
++    gfx::LINE_TO, 2, 9,
++    gfx::CUBIC_TO, 2, 7.895431f, 2.895431f, 7, 4, 7,
++    gfx::LINE_TO, 5.997f, 7,
++    gfx::CUBIC_TO, 6.731255f, 7.00004f, 7.406495f, 6.597737f, 7.756f, 5.952f,
++    gfx::LINE_TO, 8.245f, 5.048f,
++    gfx::CUBIC_TO, 8.594505f, 4.402263f, 9.269745f, 3.99996f, 10.004f, 4,
++    gfx::LINE_TO, 13.997f, 4,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 9, 13,
++    gfx::CUBIC_TO, 9, 11.343146f, 10.343146f, 10, 12, 10,
++    gfx::CUBIC_TO, 13.656854f, 10, 15, 11.343146f, 15, 13,
++    gfx::CUBIC_TO, 15, 14.656854f, 13.656854f, 16, 12, 16,
++    gfx::CUBIC_TO, 10.343146f, 16, 9, 14.656854f, 9, 13,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceCameraReps[] = {
++    {kWorkspaceCameraPath}};
++inline constexpr gfx::VectorIcon kWorkspaceCameraIcon = {
++    kWorkspaceCameraReps, std::size(kWorkspaceCameraReps), "workspace_camera"};
++
++inline constexpr gfx::PathElement kWorkspaceNotebookPenPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 13.4f, 2,
++    gfx::LINE_TO, 6, 2,
++    gfx::CUBIC_TO, 4.895431f, 2, 4, 2.895431f, 4, 4,
++    gfx::LINE_TO, 4, 20,
++    gfx::CUBIC_TO, 4, 21.104569f, 4.895431f, 22, 6, 22,
++    gfx::LINE_TO, 18, 22,
++    gfx::CUBIC_TO, 19.104569f, 22, 20, 21.104569f, 20, 20,
++    gfx::LINE_TO, 20, 12.6f,
++    gfx::MOVE_TO, 2, 6,
++    gfx::LINE_TO, 6, 6,
++    gfx::MOVE_TO, 2, 10,
++    gfx::LINE_TO, 6, 10,
++    gfx::MOVE_TO, 2, 14,
++    gfx::LINE_TO, 6, 14,
++    gfx::MOVE_TO, 2, 18,
++    gfx::LINE_TO, 6, 18,
++    gfx::MOVE_TO, 21.378f, 5.626f,
++    gfx::CUBIC_TO, 22.207532f, 4.796468f, 22.207532f, 3.451532f, 21.378f, 2.622f,
++    gfx::CUBIC_TO, 20.548468f, 1.792468f, 19.203532f, 1.792468f, 18.374f, 2.622f,
++    gfx::LINE_TO, 13.364f, 7.634f,
++    gfx::CUBIC_TO, 13.126247f, 7.871622f, 12.952221f, 8.165335f, 12.858f, 8.488f,
++    gfx::LINE_TO, 12.021f, 11.358f,
++    gfx::CUBIC_TO, 11.969881f, 11.533265f, 12.018352f, 11.722459f, 12.147447f, 11.851553f,
++    gfx::CUBIC_TO, 12.276541f, 11.980648f, 12.465735f, 12.029119f, 12.641f, 11.978f,
++    gfx::LINE_TO, 15.511f, 11.141f,
++    gfx::CUBIC_TO, 15.833665f, 11.046779f, 16.127378f, 10.872753f, 16.365f, 10.635f,
++    gfx::LINE_TO, 21.378f, 5.626f,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceNotebookPenReps[] = {
++    {kWorkspaceNotebookPenPath}};
++inline constexpr gfx::VectorIcon kWorkspaceNotebookPenIcon = {
++    kWorkspaceNotebookPenReps, std::size(kWorkspaceNotebookPenReps),
++    "workspace_notebook_pen"};
++
++inline constexpr gfx::PathElement kWorkspaceMicroscopePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 6, 18,
++    gfx::LINE_TO, 14, 18,
++    gfx::MOVE_TO, 3, 22,
++    gfx::LINE_TO, 21, 22,
++    gfx::MOVE_TO, 14, 22,
++    gfx::CUBIC_TO, 17.865993f, 22, 21, 18.865993f, 21, 15,
++    gfx::CUBIC_TO, 21, 11.134007f, 17.865993f, 8, 14, 8,
++    gfx::LINE_TO, 13, 8,
++    gfx::MOVE_TO, 9, 14,
++    gfx::LINE_TO, 11, 14,
++    gfx::MOVE_TO, 9, 12,
++    gfx::CUBIC_TO, 7.895431f, 12, 7, 11.104569f, 7, 10,
++    gfx::LINE_TO, 7, 6,
++    gfx::LINE_TO, 13, 6,
++    gfx::LINE_TO, 13, 10,
++    gfx::CUBIC_TO, 13, 11.104569f, 12.104569f, 12, 11, 12,
++    gfx::LINE_TO, 9, 12,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 12, 6,
++    gfx::LINE_TO, 12, 3,
++    gfx::CUBIC_TO, 12, 2.447715f, 11.552285f, 2, 11, 2,
++    gfx::LINE_TO, 9, 2,
++    gfx::CUBIC_TO, 8.447715f, 2, 8, 2.447715f, 8, 3,
++    gfx::LINE_TO, 8, 6,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceMicroscopeReps[] = {
++    {kWorkspaceMicroscopePath}};
++inline constexpr gfx::VectorIcon kWorkspaceMicroscopeIcon = {
++    kWorkspaceMicroscopeReps, std::size(kWorkspaceMicroscopeReps),
++    "workspace_microscope"};
++
++inline constexpr gfx::PathElement kWorkspaceLightbulbPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 15, 14,
++    gfx::CUBIC_TO, 15.2f, 13, 15.7f, 12.3f, 16.5f, 11.5f,
++    gfx::CUBIC_TO, 17.5f, 10.6f, 18, 9.3f, 18, 8,
++    gfx::CUBIC_TO, 18, 4.686292f, 15.313708f, 2, 12, 2,
++    gfx::CUBIC_TO, 8.686292f, 2, 6, 4.686292f, 6, 8,
++    gfx::CUBIC_TO, 6, 9, 6.2f, 10.2f, 7.5f, 11.5f,
++    gfx::CUBIC_TO, 8.2f, 12.2f, 8.8f, 13, 9, 14,
++    gfx::MOVE_TO, 9, 18,
++    gfx::LINE_TO, 15, 18,
++    gfx::MOVE_TO, 10, 22,
++    gfx::LINE_TO, 14, 22,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceLightbulbReps[] = {
++    {kWorkspaceLightbulbPath}};
++inline constexpr gfx::VectorIcon kWorkspaceLightbulbIcon = {
++    kWorkspaceLightbulbReps, std::size(kWorkspaceLightbulbReps),
++    "workspace_lightbulb"};
++
++inline constexpr gfx::PathElement kWorkspaceRocketPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 15,
++    gfx::LINE_TO, 12, 20,
++    gfx::CUBIC_TO, 12, 20, 15.03f, 19.45f, 16, 18,
++    gfx::CUBIC_TO, 17.08f, 16.38f, 16, 13, 16, 13,
++    gfx::MOVE_TO, 4.5f, 16.5f,
++    gfx::CUBIC_TO, 3, 17.76f, 2.5f, 21.5f, 2.5f, 21.5f,
++    gfx::CUBIC_TO, 2.5f, 21.5f, 6.24f, 21, 7.5f, 19.5f,
++    gfx::CUBIC_TO, 8.21f, 18.66f, 8.2f, 17.37f, 7.41f, 16.59f,
++    gfx::CUBIC_TO, 6.605108f, 15.821764f, 5.350828f, 15.782972f, 4.5f, 16.5f,
++    gfx::MOVE_TO, 9, 12,
++    gfx::CUBIC_TO, 9.532145f, 10.61943f, 10.202204f, 9.296063f, 11, 8.05f,
++    gfx::CUBIC_TO, 13.369152f, 4.261955f, 17.532182f, 1.972288f, 22, 2,
++    gfx::CUBIC_TO, 22, 4.72f, 21.22f, 9.5f, 16, 13,
++    gfx::CUBIC_TO, 14.736721f, 13.79843f, 13.396711f, 14.468435f, 12, 15,
++    gfx::LINE_TO, 9, 12,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 9, 12,
++    gfx::LINE_TO, 4, 12,
++    gfx::CUBIC_TO, 4, 12, 4.55f, 8.97f, 6, 8,
++    gfx::CUBIC_TO, 7.62f, 6.92f, 11, 8.05f, 11, 8.05f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceRocketReps[] = {
++    {kWorkspaceRocketPath}};
++inline constexpr gfx::VectorIcon kWorkspaceRocketIcon = {
++    kWorkspaceRocketReps, std::size(kWorkspaceRocketReps), "workspace_rocket"};
++
++inline constexpr gfx::PathElement kWorkspaceShoppingCartPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 2.05f, 2.05f,
++    gfx::LINE_TO, 3.149f, 2.022f,
++    gfx::CUBIC_TO, 3.639425f, 2.009637f, 4.066398f, 2.354858f, 4.157f, 2.837f,
++    gfx::LINE_TO, 6.847f, 17.184f,
++    gfx::CUBIC_TO, 6.935569f, 17.657135f, 7.348647f, 18.000036f, 7.83f, 18,
++    gfx::LINE_TO, 18, 18,
++    gfx::MOVE_TO, 4.563f, 5,
++    gfx::LINE_TO, 20.998f, 5,
++    gfx::CUBIC_TO, 21.299358f, 4.999388f, 21.584921f, 5.134712f, 21.775276f, 5.368339f,
++    gfx::CUBIC_TO, 21.965632f, 5.601966f, 22.040478f, 5.908979f, 21.979f, 6.204f,
++    gfx::LINE_TO, 20.953f, 12.43f,
++    gfx::CUBIC_TO, 20.74824f, 13.360908f, 19.914992f, 14.017964f, 18.962f, 14,
++    gfx::LINE_TO, 6.25f, 14,
++    gfx::MOVE_TO, 16, 20,
++    gfx::CUBIC_TO, 16, 18.895431f, 16.895431f, 18, 18, 18,
++    gfx::CUBIC_TO, 19.104569f, 18, 20, 18.895431f, 20, 20,
++    gfx::CUBIC_TO, 20, 21.104569f, 19.104569f, 22, 18, 22,
++    gfx::CUBIC_TO, 16.895431f, 22, 16, 21.104569f, 16, 20,
++    gfx::MOVE_TO, 6, 20,
++    gfx::CUBIC_TO, 6, 18.895431f, 6.895431f, 18, 8, 18,
++    gfx::CUBIC_TO, 9.104569f, 18, 10, 18.895431f, 10, 20,
++    gfx::CUBIC_TO, 10, 21.104569f, 9.104569f, 22, 8, 22,
++    gfx::CUBIC_TO, 6.895431f, 22, 6, 21.104569f, 6, 20,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceShoppingCartReps[] = {
++    {kWorkspaceShoppingCartPath}};
++inline constexpr gfx::VectorIcon kWorkspaceShoppingCartIcon = {
++    kWorkspaceShoppingCartReps, std::size(kWorkspaceShoppingCartReps),
++    "workspace_shopping_cart"};
++
++inline constexpr gfx::PathElement kWorkspaceCoinsPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 13.744f, 17.736f,
++    gfx::CUBIC_TO, 12.915004f, 20.477089f, 10.264458f, 22.250267f, 7.414465f, 21.97037f,
++    gfx::CUBIC_TO, 4.564472f, 21.690473f, 2.309527f, 19.435528f, 2.02963f, 16.585535f,
++    gfx::CUBIC_TO, 1.749733f, 13.735542f, 3.522911f, 11.084996f, 6.264f, 10.256f,
++    gfx::MOVE_TO, 15, 6,
++    gfx::LINE_TO, 16, 6,
++    gfx::LINE_TO, 16, 10,
++    gfx::MOVE_TO, 6.134f, 14.768f,
++    gfx::LINE_TO, 7, 14.268f,
++    gfx::LINE_TO, 9, 17.732f,
++    gfx::MOVE_TO, 10, 8,
++    gfx::CUBIC_TO, 10, 4.686292f, 12.686292f, 2, 16, 2,
++    gfx::CUBIC_TO, 19.313708f, 2, 22, 4.686292f, 22, 8,
++    gfx::CUBIC_TO, 22, 11.313708f, 19.313708f, 14, 16, 14,
++    gfx::CUBIC_TO, 12.686292f, 14, 10, 11.313708f, 10, 8,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceCoinsReps[] = {
++    {kWorkspaceCoinsPath}};
++inline constexpr gfx::VectorIcon kWorkspaceCoinsIcon = {
++    kWorkspaceCoinsReps, std::size(kWorkspaceCoinsReps), "workspace_coins"};
++
++inline constexpr gfx::PathElement kWorkspaceChartNoAxesCombinedPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 16,
++    gfx::LINE_TO, 12, 21,
++    gfx::MOVE_TO, 16, 14.639f,
++    gfx::LINE_TO, 16, 21,
++    gfx::MOVE_TO, 20, 10.656f,
++    gfx::LINE_TO, 20, 21,
++    gfx::MOVE_TO, 22, 3,
++    gfx::LINE_TO, 13.354f, 11.646f,
++    gfx::CUBIC_TO, 13.260196f, 11.740042f, 13.132827f, 11.792894f, 13, 11.792894f,
++    gfx::CUBIC_TO, 12.867173f, 11.792894f, 12.739804f, 11.740042f, 12.646f, 11.646f,
++    gfx::LINE_TO, 9.354f, 8.354f,
++    gfx::CUBIC_TO, 9.15875f, 8.158809f, 8.84225f, 8.158809f, 8.647f, 8.354f,
++    gfx::LINE_TO, 2, 15,
++    gfx::MOVE_TO, 4, 18.463f,
++    gfx::LINE_TO, 4, 21,
++    gfx::MOVE_TO, 8, 14.656f,
++    gfx::LINE_TO, 8, 21,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceChartNoAxesCombinedReps[] = {
++    {kWorkspaceChartNoAxesCombinedPath}};
++inline constexpr gfx::VectorIcon kWorkspaceChartNoAxesCombinedIcon = {
++    kWorkspaceChartNoAxesCombinedReps,
++    std::size(kWorkspaceChartNoAxesCombinedReps),
++    "workspace_chart_no_axes_combined"};
++
++inline constexpr gfx::PathElement kWorkspaceFolderPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 20, 20,
++    gfx::CUBIC_TO, 21.104569f, 20, 22, 19.104569f, 22, 18,
++    gfx::LINE_TO, 22, 8,
++    gfx::CUBIC_TO, 22, 6.895431f, 21.104569f, 6, 20, 6,
++    gfx::LINE_TO, 12.1f, 6,
++    gfx::CUBIC_TO, 11.420333f, 6.006664f, 10.783802f, 5.667683f, 10.41f, 5.1f,
++    gfx::LINE_TO, 9.6f, 3.9f,
++    gfx::CUBIC_TO, 9.230078f, 3.33828f, 8.602586f, 3.000111f, 7.93f, 3,
++    gfx::LINE_TO, 4, 3,
++    gfx::CUBIC_TO, 2.895431f, 3, 2, 3.895431f, 2, 5,
++    gfx::LINE_TO, 2, 18,
++    gfx::CUBIC_TO, 2, 19.104569f, 2.895431f, 20, 4, 20,
++    gfx::LINE_TO, 20, 20,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceFolderReps[] = {
++    {kWorkspaceFolderPath}};
++inline constexpr gfx::VectorIcon kWorkspaceFolderIcon = {
++    kWorkspaceFolderReps, std::size(kWorkspaceFolderReps), "workspace_folder"};
++
++inline constexpr gfx::PathElement kWorkspacePinPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 17,
++    gfx::LINE_TO, 12, 22,
++    gfx::MOVE_TO, 9, 10.76f,
++    gfx::CUBIC_TO, 8.999597f, 11.518944f, 8.569658f, 12.21227f, 7.89f, 12.55f,
++    gfx::LINE_TO, 6.11f, 13.45f,
++    gfx::CUBIC_TO, 5.430342f, 13.78773f, 5.000403f, 14.481056f, 5, 15.24f,
++    gfx::LINE_TO, 5, 16,
++    gfx::CUBIC_TO, 5, 16.552285f, 5.447715f, 17, 6, 17,
++    gfx::LINE_TO, 18, 17,
++    gfx::CUBIC_TO, 18.552285f, 17, 19, 16.552285f, 19, 16,
++    gfx::LINE_TO, 19, 15.24f,
++    gfx::CUBIC_TO, 18.999597f, 14.481056f, 18.569658f, 13.78773f, 17.89f, 13.45f,
++    gfx::LINE_TO, 16.11f, 12.55f,
++    gfx::CUBIC_TO, 15.430342f, 12.21227f, 15.000403f, 11.518944f, 15, 10.76f,
++    gfx::LINE_TO, 15, 7,
++    gfx::CUBIC_TO, 15, 6.447715f, 15.447715f, 6, 16, 6,
++    gfx::CUBIC_TO, 17.104569f, 6, 18, 5.104569f, 18, 4,
++    gfx::CUBIC_TO, 18, 2.895431f, 17.104569f, 2, 16, 2,
++    gfx::LINE_TO, 8, 2,
++    gfx::CUBIC_TO, 6.895431f, 2, 6, 2.895431f, 6, 4,
++    gfx::CUBIC_TO, 6, 5.104569f, 6.895431f, 6, 8, 6,
++    gfx::CUBIC_TO, 8.552285f, 6, 9, 6.447715f, 9, 7,
++    gfx::LINE_TO, 9, 10.76f,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspacePinReps[] = {{kWorkspacePinPath}};
++inline constexpr gfx::VectorIcon kWorkspacePinIcon = {
++    kWorkspacePinReps, std::size(kWorkspacePinReps), "workspace_pin"};
++
++inline constexpr gfx::PathElement kWorkspaceCalendarPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 8, 2,
++    gfx::LINE_TO, 8, 5,
++    gfx::MOVE_TO, 16, 2,
++    gfx::LINE_TO, 16, 5,
++    gfx::MOVE_TO, 5, 3,
++    gfx::LINE_TO, 19, 3,
++    gfx::CUBIC_TO, 20.104569f, 3, 21, 3.895431f, 21, 5,
++    gfx::LINE_TO, 21, 19,
++    gfx::CUBIC_TO, 21, 20.104569f, 20.104569f, 21, 19, 21,
++    gfx::LINE_TO, 5, 21,
++    gfx::CUBIC_TO, 3.895431f, 21, 3, 20.104569f, 3, 19,
++    gfx::LINE_TO, 3, 5,
++    gfx::CUBIC_TO, 3, 3.895431f, 3.895431f, 3, 5, 3,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 3, 9,
++    gfx::LINE_TO, 21, 9,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceCalendarReps[] = {
++    {kWorkspaceCalendarPath}};
++inline constexpr gfx::VectorIcon kWorkspaceCalendarIcon = {
++    kWorkspaceCalendarReps, std::size(kWorkspaceCalendarReps),
++    "workspace_calendar"};
++
++inline constexpr gfx::PathElement kWorkspaceMailPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 22, 7,
++    gfx::LINE_TO, 13.009f, 12.727f,
++    gfx::CUBIC_TO, 12.387915f, 13.08774f, 11.621085f, 13.08774f, 11, 12.727f,
++    gfx::LINE_TO, 2, 7,
++    gfx::MOVE_TO, 4, 4,
++    gfx::LINE_TO, 20, 4,
++    gfx::CUBIC_TO, 21.104569f, 4, 22, 4.895431f, 22, 6,
++    gfx::LINE_TO, 22, 18,
++    gfx::CUBIC_TO, 22, 19.104569f, 21.104569f, 20, 20, 20,
++    gfx::LINE_TO, 4, 20,
++    gfx::CUBIC_TO, 2.895431f, 20, 2, 19.104569f, 2, 18,
++    gfx::LINE_TO, 2, 6,
++    gfx::CUBIC_TO, 2, 4.895431f, 2.895431f, 4, 4, 4,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceMailReps[] = {
++    {kWorkspaceMailPath}};
++inline constexpr gfx::VectorIcon kWorkspaceMailIcon = {
++    kWorkspaceMailReps, std::size(kWorkspaceMailReps), "workspace_mail"};
++
++inline constexpr gfx::PathElement kWorkspaceMessageCirclePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 2.992f, 16.342f,
++    gfx::CUBIC_TO, 3.139039f, 16.712915f, 3.171775f, 17.119332f, 3.086f, 17.509f,
++    gfx::LINE_TO, 2.021f, 20.799f,
++    gfx::CUBIC_TO, 1.95123f, 21.138228f, 2.061949f, 21.489405f, 2.313667f, 21.727274f,
++    gfx::CUBIC_TO, 2.565384f, 21.965143f, 2.922259f, 22.055834f, 3.257f, 21.967f,
++    gfx::LINE_TO, 6.67f, 20.969f,
++    gfx::CUBIC_TO, 7.037716f, 20.896062f, 7.418529f, 20.927941f, 7.769f, 21.061f,
++    gfx::CUBIC_TO, 12.177509f, 23.119764f, 17.427993f, 21.706699f, 20.207699f, 17.713367f,
++    gfx::CUBIC_TO, 22.987404f, 13.720035f, 22.489471f, 8.305572f, 19.028066f, 4.886195f,
++    gfx::CUBIC_TO, 15.566662f, 1.466817f, 10.146522f, 1.03506f, 6.187442f, 3.863337f,
++    gfx::CUBIC_TO, 2.228363f, 6.691615f, 0.879538f, 11.958968f, 2.992f, 16.342f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceMessageCircleReps[] = {
++    {kWorkspaceMessageCirclePath}};
++inline constexpr gfx::VectorIcon kWorkspaceMessageCircleIcon = {
++    kWorkspaceMessageCircleReps, std::size(kWorkspaceMessageCircleReps),
++    "workspace_message_circle"};
++
++inline constexpr gfx::PathElement kWorkspaceGlobePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 2, 12,
++    gfx::CUBIC_TO, 2, 6.477153f, 6.477153f, 2, 12, 2,
++    gfx::CUBIC_TO, 17.522847f, 2, 22, 6.477153f, 22, 12,
++    gfx::CUBIC_TO, 22, 17.522847f, 17.522847f, 22, 12, 22,
++    gfx::CUBIC_TO, 6.477153f, 22, 2, 17.522847f, 2, 12,
++    gfx::MOVE_TO, 12, 2,
++    gfx::CUBIC_TO, 6.666667f, 7.6f, 6.666667f, 16.4f, 12, 22,
++    gfx::CUBIC_TO, 17.333333f, 16.4f, 17.333333f, 7.6f, 12, 2,
++    gfx::MOVE_TO, 2, 12,
++    gfx::LINE_TO, 22, 12,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceGlobeReps[] = {
++    {kWorkspaceGlobePath}};
++inline constexpr gfx::VectorIcon kWorkspaceGlobeIcon = {
++    kWorkspaceGlobeReps, std::size(kWorkspaceGlobeReps), "workspace_globe"};
++
++inline constexpr gfx::PathElement kWorkspaceLockPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 5, 11,
++    gfx::LINE_TO, 19, 11,
++    gfx::CUBIC_TO, 20.104569f, 11, 21, 11.895431f, 21, 13,
++    gfx::LINE_TO, 21, 20,
++    gfx::CUBIC_TO, 21, 21.104569f, 20.104569f, 22, 19, 22,
++    gfx::LINE_TO, 5, 22,
++    gfx::CUBIC_TO, 3.895431f, 22, 3, 21.104569f, 3, 20,
++    gfx::LINE_TO, 3, 13,
++    gfx::CUBIC_TO, 3, 11.895431f, 3.895431f, 11, 5, 11,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 7, 11,
++    gfx::LINE_TO, 7, 7,
++    gfx::CUBIC_TO, 7, 4.238576f, 9.238576f, 2, 12, 2,
++    gfx::CUBIC_TO, 14.761424f, 2, 17, 4.238576f, 17, 7,
++    gfx::LINE_TO, 17, 11,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceLockReps[] = {
++    {kWorkspaceLockPath}};
++inline constexpr gfx::VectorIcon kWorkspaceLockIcon = {
++    kWorkspaceLockReps, std::size(kWorkspaceLockReps), "workspace_lock"};
++
++inline constexpr gfx::PathElement kWorkspaceWrenchPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 14.7f, 6.3f,
++    gfx::CUBIC_TO, 14.318857f, 6.688844f, 14.318857f, 7.311156f, 14.7f, 7.7f,
++    gfx::LINE_TO, 16.3f, 9.3f,
++    gfx::CUBIC_TO, 16.688844f, 9.681143f, 17.311156f, 9.681143f, 17.7f, 9.3f,
++    gfx::LINE_TO, 20.806f, 6.195f,
++    gfx::CUBIC_TO, 21.126f, 5.873f, 21.669f, 5.975f, 21.789f, 6.413f,
++    gfx::CUBIC_TO, 22.405784f, 8.656272f, 21.670151f, 11.053896f, 19.901385f, 12.565239f,
++    gfx::CUBIC_TO, 18.132618f, 14.076583f, 15.649591f, 14.429182f, 13.53f, 13.47f,
++    gfx::LINE_TO, 5.62f, 21.38f,
++    gfx::CUBIC_TO, 4.791573f, 22.208151f, 3.448651f, 22.207927f, 2.6205f, 21.3795f,
++    gfx::CUBIC_TO, 1.792349f, 20.551073f, 1.792573f, 19.208151f, 2.621f, 18.38f,
++    gfx::LINE_TO, 10.531f, 10.47f,
++    gfx::CUBIC_TO, 9.571818f, 8.350409f, 9.924417f, 5.867382f, 11.435761f, 4.098615f,
++    gfx::CUBIC_TO, 12.947104f, 2.329849f, 15.344728f, 1.594216f, 17.588f, 2.211f,
++    gfx::CUBIC_TO, 18.026f, 2.331f, 18.128f, 2.873f, 17.807f, 3.195f,
++    gfx::LINE_TO, 14.7f, 6.3f,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceWrenchReps[] = {
++    {kWorkspaceWrenchPath}};
++inline constexpr gfx::VectorIcon kWorkspaceWrenchIcon = {
++    kWorkspaceWrenchReps, std::size(kWorkspaceWrenchReps), "workspace_wrench"};
++
++inline constexpr gfx::PathElement kWorkspaceFlaskConicalPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 14, 2,
++    gfx::LINE_TO, 14, 8,
++    gfx::CUBIC_TO, 13.999858f, 8.335484f, 14.08411f, 8.665613f, 14.245f, 8.96f,
++    gfx::LINE_TO, 19.755f, 19.04f,
++    gfx::CUBIC_TO, 20.094083f, 19.659723f, 20.081087f, 20.412357f, 19.72081f, 21.020003f,
++    gfx::CUBIC_TO, 19.360533f, 21.627649f, 18.706423f, 22.000164f, 18, 22,
++    gfx::LINE_TO, 6, 22,
++    gfx::CUBIC_TO, 5.293577f, 22.000164f, 4.639467f, 21.627649f, 4.27919f, 21.020003f,
++    gfx::CUBIC_TO, 3.918913f, 20.412357f, 3.905917f, 19.659723f, 4.245f, 19.04f,
++    gfx::LINE_TO, 9.755f, 8.96f,
++    gfx::CUBIC_TO, 9.91589f, 8.665613f, 10.000142f, 8.335484f, 10, 8,
++    gfx::LINE_TO, 10, 2,
++    gfx::MOVE_TO, 6.453f, 15,
++    gfx::LINE_TO, 17.547f, 15,
++    gfx::MOVE_TO, 8.5f, 2,
++    gfx::LINE_TO, 15.5f, 2,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceFlaskConicalReps[] = {
++    {kWorkspaceFlaskConicalPath}};
++inline constexpr gfx::VectorIcon kWorkspaceFlaskConicalIcon = {
++    kWorkspaceFlaskConicalReps, std::size(kWorkspaceFlaskConicalReps),
++    "workspace_flask_conical"};
++
++inline constexpr gfx::PathElement kWorkspaceBrainPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 18,
++    gfx::LINE_TO, 12, 5,
++    gfx::MOVE_TO, 15, 13,
++    gfx::CUBIC_TO, 13.222888f, 12.48052f, 12.00111f, 10.851482f, 12, 9,
++    gfx::CUBIC_TO, 11.99889f, 10.851482f, 10.777112f, 12.48052f, 9, 13,
++    gfx::MOVE_TO, 17.598f, 6.5f,
++    gfx::CUBIC_TO, 18.22867f, 5.407775f, 18.108855f, 4.037723f, 17.29817f, 3.071549f,
++    gfx::CUBIC_TO, 16.487486f, 2.105376f, 15.159068f, 1.749422f, 13.973905f, 2.180803f,
++    gfx::CUBIC_TO, 12.788742f, 2.612184f, 11.999945f, 3.73877f, 12, 5,
++    gfx::CUBIC_TO, 12.000055f, 3.73877f, 11.211258f, 2.612184f, 10.026095f, 2.180803f,
++    gfx::CUBIC_TO, 8.840932f, 1.749422f, 7.512514f, 2.105376f, 6.70183f, 3.071549f,
++    gfx::CUBIC_TO, 5.891145f, 4.037723f, 5.77133f, 5.407775f, 6.402f, 6.5f,
++    gfx::MOVE_TO, 17.997f, 5.125f,
++    gfx::CUBIC_TO, 19.188021f, 5.431239f, 20.171979f, 6.26831f, 20.665156f, 7.394848f,
++    gfx::CUBIC_TO, 21.158334f, 8.521387f, 21.10591f, 9.812166f, 20.523f, 10.895f,
++    gfx::MOVE_TO, 18, 18,
++    gfx::CUBIC_TO, 19.810352f, 17.99992f, 21.394964f, 16.783954f, 21.863524f, 15.035289f,
++    gfx::CUBIC_TO, 22.332083f, 13.286625f, 21.567765f, 11.441256f, 20, 10.536f,
++    gfx::MOVE_TO, 19.967f, 17.483f,
++    gfx::CUBIC_TO, 20.157987f, 18.960667f, 19.511849f, 20.42202f, 18.290305f, 21.275135f,
++    gfx::CUBIC_TO, 17.068761f, 22.128251f, 15.474289f, 22.23172f, 14.152733f, 21.543633f,
++    gfx::CUBIC_TO, 12.831176f, 20.855546f, 12.00159f, 19.489958f, 12, 18,
++    gfx::CUBIC_TO, 11.99841f, 19.489958f, 11.168824f, 20.855546f, 9.847267f, 21.543633f,
++    gfx::CUBIC_TO, 8.525711f, 22.23172f, 6.931239f, 22.128251f, 5.709695f, 21.275135f,
++    gfx::CUBIC_TO, 4.488151f, 20.42202f, 3.842013f, 18.960667f, 4.033f, 17.483f,
++    gfx::MOVE_TO, 6, 18,
++    gfx::CUBIC_TO, 4.189648f, 17.99992f, 2.605036f, 16.783954f, 2.136476f, 15.035289f,
++    gfx::CUBIC_TO, 1.667917f, 13.286625f, 2.432235f, 11.441256f, 4, 10.536f,
++    gfx::MOVE_TO, 6.003f, 5.125f,
++    gfx::CUBIC_TO, 4.811979f, 5.431239f, 3.828021f, 6.26831f, 3.334844f, 7.394848f,
++    gfx::CUBIC_TO, 2.841666f, 8.521387f, 2.89409f, 9.812166f, 3.477f, 10.895f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceBrainReps[] = {
++    {kWorkspaceBrainPath}};
++inline constexpr gfx::VectorIcon kWorkspaceBrainIcon = {
++    kWorkspaceBrainReps, std::size(kWorkspaceBrainReps), "workspace_brain"};
++
++inline constexpr gfx::PathElement kWorkspaceHeartPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 2, 9.5f,
++    gfx::CUBIC_TO, 2.000042f, 7.221946f, 3.404444f, 5.17969f, 5.531609f, 4.364399f,
++    gfx::CUBIC_TO, 7.658774f, 3.549108f, 10.06839f, 4.129542f, 11.591f, 5.824f,
++    gfx::CUBIC_TO, 11.696891f, 5.937222f, 11.844977f, 6.001483f, 12, 6.001483f,
++    gfx::CUBIC_TO, 12.155023f, 6.001483f, 12.303109f, 5.937222f, 12.409f, 5.824f,
++    gfx::CUBIC_TO, 13.927118f, 4.118204f, 16.342614f, 3.530239f, 18.474875f, 4.347483f,
++    gfx::CUBIC_TO, 20.607135f, 5.164728f, 22.010878f, 7.216515f, 22, 9.5f,
++    gfx::CUBIC_TO, 22, 11.79f, 20.5f, 13.5f, 19, 15,
++    gfx::LINE_TO, 13.508f, 20.313f,
++    gfx::CUBIC_TO, 13.131067f, 20.745917f, 12.586294f, 20.99601f, 12.012289f, 20.999645f,
++    gfx::CUBIC_TO, 11.438283f, 21.00328f, 10.890386f, 20.760108f, 10.508f, 20.332f,
++    gfx::LINE_TO, 5, 15,
++    gfx::CUBIC_TO, 3.5f, 13.5f, 2, 11.8f, 2, 9.5f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceHeartReps[] = {
++    {kWorkspaceHeartPath}};
++inline constexpr gfx::VectorIcon kWorkspaceHeartIcon = {
++    kWorkspaceHeartReps, std::size(kWorkspaceHeartReps), "workspace_heart"};
++
++inline constexpr gfx::PathElement kWorkspaceStarPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 11.525f, 2.295f,
++    gfx::CUBIC_TO, 11.614394f, 2.114392f, 11.798479f, 2.000106f, 12, 2.000106f,
++    gfx::CUBIC_TO, 12.201521f, 2.000106f, 12.385606f, 2.114392f, 12.475f, 2.295f,
++    gfx::LINE_TO, 14.785f, 6.974f,
++    gfx::CUBIC_TO, 15.093904f, 7.599141f, 15.690095f, 8.032735f, 16.38f, 8.134f,
++    gfx::LINE_TO, 21.546f, 8.89f,
++    gfx::CUBIC_TO, 21.745682f, 8.918931f, 21.911617f, 9.058732f, 21.974019f, 9.250607f,
++    gfx::CUBIC_TO, 22.036421f, 9.442482f, 21.984464f, 9.653145f, 21.84f, 9.794f,
++    gfx::LINE_TO, 18.104f, 13.432f,
++    gfx::CUBIC_TO, 17.603843f, 13.919401f, 17.375383f, 14.621608f, 17.493f, 15.31f,
++    gfx::LINE_TO, 18.375f, 20.45f,
++    gfx::CUBIC_TO, 18.410254f, 20.649623f, 18.328557f, 20.851869f, 18.164543f, 20.970997f,
++    gfx::CUBIC_TO, 18.000529f, 21.090125f, 17.782932f, 21.105266f, 17.604f, 21.01f,
++    gfx::LINE_TO, 12.986f, 18.582f,
++    gfx::CUBIC_TO, 12.36832f, 18.257667f, 11.63068f, 18.257667f, 11.013f, 18.582f,
++    gfx::LINE_TO, 6.396f, 21.01f,
++    gfx::CUBIC_TO, 6.217138f, 21.104688f, 5.999967f, 21.089253f, 5.836295f, 20.970219f,
++    gfx::CUBIC_TO, 5.672624f, 20.851185f, 5.591027f, 20.649334f, 5.626f, 20.45f,
++    gfx::LINE_TO, 6.507f, 15.311f,
++    gfx::CUBIC_TO, 6.625141f, 14.622269f, 6.396627f, 13.919524f, 5.896f, 13.432f,
++    gfx::LINE_TO, 2.16f, 9.795f,
++    gfx::CUBIC_TO, 2.014312f, 9.654288f, 1.961561f, 9.442847f, 2.024079f, 9.250191f,
++    gfx::CUBIC_TO, 2.086596f, 9.057535f, 2.253449f, 8.917357f, 2.454f, 8.889f,
++    gfx::LINE_TO, 7.619f, 8.134f,
++    gfx::CUBIC_TO, 8.309714f, 8.033515f, 8.906842f, 7.599784f, 9.216f, 6.974f,
++    gfx::LINE_TO, 11.525f, 2.295f,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceStarReps[] = {
++    {kWorkspaceStarPath}};
++inline constexpr gfx::VectorIcon kWorkspaceStarIcon = {
++    kWorkspaceStarReps, std::size(kWorkspaceStarReps), "workspace_star"};
++
++inline constexpr gfx::PathElement kWorkspaceFlamePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 3,
++    gfx::QUADRATIC_TO, 13, 7, 16, 9.5f,
++    gfx::QUADRATIC_TO, 19, 12, 19, 15,
++    gfx::CUBIC_TO, 19, 18.865993f, 15.865993f, 22, 12, 22,
++    gfx::CUBIC_TO, 8.134007f, 22, 5, 18.865993f, 5, 15,
++    gfx::CUBIC_TO, 5, 13.918149f, 5.350889f, 12.865481f, 6, 12,
++    gfx::CUBIC_TO, 6, 13.380712f, 7.119288f, 14.5f, 8.5f, 14.5f,
++    gfx::CUBIC_TO, 9.880712f, 14.5f, 11, 13.380712f, 11, 12,
++    gfx::CUBIC_TO, 11, 10, 9.5f, 9, 9.5f, 7,
++    gfx::QUADRATIC_TO, 9.5f, 5, 12, 3,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceFlameReps[] = {
++    {kWorkspaceFlamePath}};
++inline constexpr gfx::VectorIcon kWorkspaceFlameIcon = {
++    kWorkspaceFlameReps, std::size(kWorkspaceFlameReps), "workspace_flame"};
++
++inline constexpr gfx::PathElement kWorkspaceSproutPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 14, 9.536f,
++    gfx::LINE_TO, 14, 7,
++    gfx::CUBIC_TO, 14, 4.790861f, 15.790861f, 3, 18, 3,
++    gfx::LINE_TO, 19.5f, 3,
++    gfx::CUBIC_TO, 19.776142f, 3, 20, 3.223858f, 20, 3.5f,
++    gfx::LINE_TO, 20, 5,
++    gfx::CUBIC_TO, 20, 7.209139f, 18.209139f, 9, 16, 9,
++    gfx::CUBIC_TO, 13.790861f, 9, 12, 10.790861f, 12, 13,
++    gfx::CUBIC_TO, 12, 15, 13, 16, 13, 18,
++    gfx::CUBIC_TO, 13, 19.081851f, 12.649111f, 20.134519f, 12, 21,
++    gfx::MOVE_TO, 4, 9,
++    gfx::CUBIC_TO, 5.515088f, 7.863684f, 7.542148f, 7.680904f, 9.236068f, 8.527864f,
++    gfx::CUBIC_TO, 10.929988f, 9.374824f, 12, 11.10614f, 12, 13,
++    gfx::CUBIC_TO, 10.484912f, 14.136316f, 8.457852f, 14.319096f, 6.763932f, 13.472136f,
++    gfx::CUBIC_TO, 5.070012f, 12.625176f, 4, 10.89386f, 4, 9,
++    gfx::MOVE_TO, 5, 21,
++    gfx::LINE_TO, 19, 21,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceSproutReps[] = {
++    {kWorkspaceSproutPath}};
++inline constexpr gfx::VectorIcon kWorkspaceSproutIcon = {
++    kWorkspaceSproutReps, std::size(kWorkspaceSproutReps), "workspace_sprout"};
++
++inline constexpr gfx::PathElement kWorkspaceEarthPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 21.54f, 15,
++    gfx::LINE_TO, 17, 15,
++    gfx::CUBIC_TO, 15.895431f, 15, 15, 15.895431f, 15, 17,
++    gfx::LINE_TO, 15, 21.54f,
++    gfx::MOVE_TO, 7, 3.34f,
++    gfx::LINE_TO, 7, 5,
++    gfx::CUBIC_TO, 7, 6.656854f, 8.343146f, 8, 10, 8,
++    gfx::CUBIC_TO, 11.104569f, 8, 12, 8.895431f, 12, 10,
++    gfx::CUBIC_TO, 12, 11.1f, 12.9f, 12, 14, 12,
++    gfx::CUBIC_TO, 15.104569f, 12, 16, 11.104569f, 16, 10,
++    gfx::CUBIC_TO, 16, 8.9f, 16.9f, 8, 18, 8,
++    gfx::LINE_TO, 21.17f, 8,
++    gfx::MOVE_TO, 11, 21.95f,
++    gfx::LINE_TO, 11, 18,
++    gfx::CUBIC_TO, 11, 16.895431f, 10.104569f, 16, 9, 16,
++    gfx::CUBIC_TO, 7.895431f, 16, 7, 15.104569f, 7, 14,
++    gfx::LINE_TO, 7, 13,
++    gfx::CUBIC_TO, 7, 11.895431f, 6.104569f, 11, 5, 11,
++    gfx::LINE_TO, 2.05f, 11,
++    gfx::MOVE_TO, 2, 12,
++    gfx::CUBIC_TO, 2, 6.477153f, 6.477153f, 2, 12, 2,
++    gfx::CUBIC_TO, 17.522847f, 2, 22, 6.477153f, 22, 12,
++    gfx::CUBIC_TO, 22, 17.522847f, 17.522847f, 22, 12, 22,
++    gfx::CUBIC_TO, 6.477153f, 22, 2, 17.522847f, 2, 12,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceEarthReps[] = {
++    {kWorkspaceEarthPath}};
++inline constexpr gfx::VectorIcon kWorkspaceEarthIcon = {
++    kWorkspaceEarthReps, std::size(kWorkspaceEarthReps), "workspace_earth"};
++
++inline constexpr gfx::PathElement kWorkspaceHamburgerPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 16,
++    gfx::LINE_TO, 4, 16,
++    gfx::CUBIC_TO, 2.895431f, 16, 2, 15.104569f, 2, 14,
++    gfx::CUBIC_TO, 2, 12.895431f, 2.895431f, 12, 4, 12,
++    gfx::LINE_TO, 20, 12,
++    gfx::CUBIC_TO, 21.104569f, 12, 22, 12.895431f, 22, 14,
++    gfx::CUBIC_TO, 22, 15.104569f, 21.104569f, 16, 20, 16,
++    gfx::LINE_TO, 15.75f, 16,
++    gfx::MOVE_TO, 5, 12,
++    gfx::CUBIC_TO, 3.895431f, 12, 3, 11.104569f, 3, 10,
++    gfx::CUBIC_TO, 3, 6.134007f, 7.029437f, 3, 12, 3,
++    gfx::CUBIC_TO, 16.970563f, 3, 21, 6.134007f, 21, 10,
++    gfx::CUBIC_TO, 21, 11.104569f, 20.104569f, 12, 19, 12,
++    gfx::MOVE_TO, 5, 16,
++    gfx::CUBIC_TO, 3.895431f, 16, 3, 16.895431f, 3, 18,
++    gfx::CUBIC_TO, 3, 19.656854f, 4.343146f, 21, 6, 21,
++    gfx::LINE_TO, 18, 21,
++    gfx::CUBIC_TO, 19.656854f, 21, 21, 19.656854f, 21, 18,
++    gfx::CUBIC_TO, 21, 16.895431f, 20.104569f, 16, 19, 16,
++    gfx::QUADRATIC_TO, 19, 16, 19, 16,
++    gfx::MOVE_TO, 6.67f, 12,
++    gfx::LINE_TO, 12.8f, 16.6f,
++    gfx::CUBIC_TO, 13.683656f, 17.262742f, 14.937258f, 17.083656f, 15.6f, 16.2f,
++    gfx::LINE_TO, 18.75f, 12,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceHamburgerReps[] = {
++    {kWorkspaceHamburgerPath}};
++inline constexpr gfx::VectorIcon kWorkspaceHamburgerIcon = {
++    kWorkspaceHamburgerReps, std::size(kWorkspaceHamburgerReps),
++    "workspace_hamburger"};
++
++inline constexpr gfx::PathElement kWorkspaceCoffeePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 10, 2,
++    gfx::LINE_TO, 10, 4,
++    gfx::MOVE_TO, 14, 2,
++    gfx::LINE_TO, 14, 4,
++    gfx::MOVE_TO, 16, 8,
++    gfx::CUBIC_TO, 16.552285f, 8, 17, 8.447715f, 17, 9,
++    gfx::LINE_TO, 17, 17,
++    gfx::CUBIC_TO, 17, 19.209139f, 15.209139f, 21, 13, 21,
++    gfx::LINE_TO, 7, 21,
++    gfx::CUBIC_TO, 4.790861f, 21, 3, 19.209139f, 3, 17,
++    gfx::LINE_TO, 3, 9,
++    gfx::CUBIC_TO, 3, 8.447715f, 3.447715f, 8, 4, 8,
++    gfx::LINE_TO, 18, 8,
++    gfx::CUBIC_TO, 20.209139f, 8, 22, 9.790861f, 22, 12,
++    gfx::CUBIC_TO, 22, 14.209139f, 20.209139f, 16, 18, 16,
++    gfx::LINE_TO, 17, 16,
++    gfx::MOVE_TO, 6, 2,
++    gfx::LINE_TO, 6, 4,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceCoffeeReps[] = {
++    {kWorkspaceCoffeePath}};
++inline constexpr gfx::VectorIcon kWorkspaceCoffeeIcon = {
++    kWorkspaceCoffeeReps, std::size(kWorkspaceCoffeeReps), "workspace_coffee"};
++
++inline constexpr gfx::PathElement kWorkspaceTrophyPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 10, 14.66f,
++    gfx::LINE_TO, 10, 17,
++    gfx::CUBIC_TO, 10, 17.552285f, 9.552285f, 18, 9, 18,
++    gfx::CUBIC_TO, 7.895431f, 18, 7, 18.895431f, 7, 20,
++    gfx::LINE_TO, 7, 22,
++    gfx::MOVE_TO, 14, 14.66f,
++    gfx::LINE_TO, 14, 17,
++    gfx::CUBIC_TO, 14, 17.552285f, 14.447715f, 18, 15, 18,
++    gfx::CUBIC_TO, 16.104569f, 18, 17, 18.895431f, 17, 20,
++    gfx::LINE_TO, 17, 22,
++    gfx::MOVE_TO, 17.916f, 10,
++    gfx::LINE_TO, 19.5f, 10,
++    gfx::CUBIC_TO, 20.880712f, 10, 22, 8.880712f, 22, 7.5f,
++    gfx::LINE_TO, 22, 5,
++    gfx::CUBIC_TO, 22, 4.447715f, 21.552285f, 4, 21, 4,
++    gfx::LINE_TO, 18, 4,
++    gfx::MOVE_TO, 4, 22,
++    gfx::LINE_TO, 20, 22,
++    gfx::MOVE_TO, 6, 9,
++    gfx::CUBIC_TO, 6, 12.313708f, 8.686292f, 15, 12, 15,
++    gfx::CUBIC_TO, 15.313708f, 15, 18, 12.313708f, 18, 9,
++    gfx::LINE_TO, 18, 3,
++    gfx::CUBIC_TO, 18, 2.447715f, 17.552285f, 2, 17, 2,
++    gfx::LINE_TO, 7, 2,
++    gfx::CUBIC_TO, 6.447715f, 2, 6, 2.447715f, 6, 3,
++    gfx::LINE_TO, 6, 9,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 6.084f, 10,
++    gfx::LINE_TO, 4.5f, 10,
++    gfx::CUBIC_TO, 3.119288f, 10, 2, 8.880712f, 2, 7.5f,
++    gfx::LINE_TO, 2, 5,
++    gfx::CUBIC_TO, 2, 4.447715f, 2.447715f, 4, 3, 4,
++    gfx::LINE_TO, 6, 4,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceTrophyReps[] = {
++    {kWorkspaceTrophyPath}};
++inline constexpr gfx::VectorIcon kWorkspaceTrophyIcon = {
++    kWorkspaceTrophyReps, std::size(kWorkspaceTrophyReps), "workspace_trophy"};
++
++inline constexpr gfx::PathElement kWorkspaceDumbbellPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 17.596f, 12.768f,
++    gfx::CUBIC_TO, 18.377207f, 13.549207f, 19.643793f, 13.549207f, 20.425f, 12.768f,
++    gfx::CUBIC_TO, 21.206207f, 11.986793f, 21.206207f, 10.720207f, 20.425f, 9.939f,
++    gfx::LINE_TO, 18.657f, 8.172f,
++    gfx::CUBIC_TO, 19.438207f, 8.952931f, 20.704569f, 8.952707f, 21.4855f, 8.1715f,
++    gfx::CUBIC_TO, 22.266431f, 7.390293f, 22.266207f, 6.123931f, 21.485f, 5.343f,
++    gfx::LINE_TO, 18.657f, 2.515f,
++    gfx::CUBIC_TO, 17.876069f, 1.733793f, 16.609707f, 1.733569f, 15.8285f, 2.5145f,
++    gfx::CUBIC_TO, 15.047293f, 3.295431f, 15.047069f, 4.561793f, 15.828f, 5.343f,
++    gfx::LINE_TO, 14.061f, 3.575f,
++    gfx::CUBIC_TO, 13.279793f, 2.793793f, 12.013207f, 2.793793f, 11.232f, 3.575f,
++    gfx::CUBIC_TO, 10.450793f, 4.356207f, 10.450793f, 5.622793f, 11.232f, 6.404f,
++    gfx::LINE_TO, 17.596f, 12.768f,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 2.5f, 21.5f,
++    gfx::LINE_TO, 3.9f, 20.1f,
++    gfx::MOVE_TO, 20.1f, 3.9f,
++    gfx::LINE_TO, 21.5f, 2.5f,
++    gfx::MOVE_TO, 5.343f, 21.485f,
++    gfx::CUBIC_TO, 6.123931f, 22.266207f, 7.390293f, 22.266431f, 8.1715f, 21.4855f,
++    gfx::CUBIC_TO, 8.952707f, 20.704569f, 8.952931f, 19.438207f, 8.172f, 18.657f,
++    gfx::LINE_TO, 9.939f, 20.425f,
++    gfx::CUBIC_TO, 10.720207f, 21.206207f, 11.986793f, 21.206207f, 12.768f, 20.425f,
++    gfx::CUBIC_TO, 13.549207f, 19.643793f, 13.549207f, 18.377207f, 12.768f, 17.596f,
++    gfx::LINE_TO, 6.404f, 11.232f,
++    gfx::CUBIC_TO, 5.622793f, 10.450793f, 4.356207f, 10.450793f, 3.575f, 11.232f,
++    gfx::CUBIC_TO, 2.793793f, 12.013207f, 2.793793f, 13.279793f, 3.575f, 14.061f,
++    gfx::LINE_TO, 5.343f, 15.828f,
++    gfx::CUBIC_TO, 4.561793f, 15.047069f, 3.295431f, 15.047293f, 2.5145f, 15.8285f,
++    gfx::CUBIC_TO, 1.733569f, 16.609707f, 1.733793f, 17.876069f, 2.515f, 18.657f,
++    gfx::LINE_TO, 5.343f, 21.485f,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 9.6f, 14.4f,
++    gfx::LINE_TO, 14.4f, 9.6f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceDumbbellReps[] = {
++    {kWorkspaceDumbbellPath}};
++inline constexpr gfx::VectorIcon kWorkspaceDumbbellIcon = {
++    kWorkspaceDumbbellReps, std::size(kWorkspaceDumbbellReps),
++    "workspace_dumbbell"};
++
++inline constexpr gfx::PathElement kWorkspaceHeadphonesPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 3, 14,
++    gfx::LINE_TO, 6, 14,
++    gfx::CUBIC_TO, 7.104569f, 14, 8, 14.895431f, 8, 16,
++    gfx::LINE_TO, 8, 19,
++    gfx::CUBIC_TO, 8, 20.104569f, 7.104569f, 21, 6, 21,
++    gfx::LINE_TO, 5, 21,
++    gfx::CUBIC_TO, 3.895431f, 21, 3, 20.104569f, 3, 19,
++    gfx::LINE_TO, 3, 12,
++    gfx::CUBIC_TO, 3, 7.029437f, 7.029437f, 3, 12, 3,
++    gfx::CUBIC_TO, 16.970563f, 3, 21, 7.029437f, 21, 12,
++    gfx::LINE_TO, 21, 19,
++    gfx::CUBIC_TO, 21, 20.104569f, 20.104569f, 21, 19, 21,
++    gfx::LINE_TO, 18, 21,
++    gfx::CUBIC_TO, 16.895431f, 21, 16, 20.104569f, 16, 19,
++    gfx::LINE_TO, 16, 16,
++    gfx::CUBIC_TO, 16, 14.895431f, 16.895431f, 14, 18, 14,
++    gfx::LINE_TO, 21, 14,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceHeadphonesReps[] = {
++    {kWorkspaceHeadphonesPath}};
++inline constexpr gfx::VectorIcon kWorkspaceHeadphonesIcon = {
++    kWorkspaceHeadphonesReps, std::size(kWorkspaceHeadphonesReps),
++    "workspace_headphones"};
++
++inline constexpr gfx::PathElement kWorkspaceTvPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 17, 2,
++    gfx::LINE_TO, 12, 7,
++    gfx::LINE_TO, 7, 2,
++    gfx::MOVE_TO, 4, 7,
++    gfx::LINE_TO, 20, 7,
++    gfx::CUBIC_TO, 21.104569f, 7, 22, 7.895431f, 22, 9,
++    gfx::LINE_TO, 22, 20,
++    gfx::CUBIC_TO, 22, 21.104569f, 21.104569f, 22, 20, 22,
++    gfx::LINE_TO, 4, 22,
++    gfx::CUBIC_TO, 2.895431f, 22, 2, 21.104569f, 2, 20,
++    gfx::LINE_TO, 2, 9,
++    gfx::CUBIC_TO, 2, 7.895431f, 2.895431f, 7, 4, 7,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceTvReps[] = {{kWorkspaceTvPath}};
++inline constexpr gfx::VectorIcon kWorkspaceTvIcon = {
++    kWorkspaceTvReps, std::size(kWorkspaceTvReps), "workspace_tv"};
++
++inline constexpr gfx::PathElement kWorkspaceDice5Path[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 5, 3,
++    gfx::LINE_TO, 19, 3,
++    gfx::CUBIC_TO, 20.104569f, 3, 21, 3.895431f, 21, 5,
++    gfx::LINE_TO, 21, 19,
++    gfx::CUBIC_TO, 21, 20.104569f, 20.104569f, 21, 19, 21,
++    gfx::LINE_TO, 5, 21,
++    gfx::CUBIC_TO, 3.895431f, 21, 3, 20.104569f, 3, 19,
++    gfx::LINE_TO, 3, 5,
++    gfx::CUBIC_TO, 3, 3.895431f, 3.895431f, 3, 5, 3,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 16, 8,
++    gfx::LINE_TO, 16.01f, 8,
++    gfx::MOVE_TO, 8, 8,
++    gfx::LINE_TO, 8.01f, 8,
++    gfx::MOVE_TO, 8, 16,
++    gfx::LINE_TO, 8.01f, 16,
++    gfx::MOVE_TO, 16, 16,
++    gfx::LINE_TO, 16.01f, 16,
++    gfx::MOVE_TO, 12, 12,
++    gfx::LINE_TO, 12.01f, 12,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceDice5Reps[] = {
++    {kWorkspaceDice5Path}};
++inline constexpr gfx::VectorIcon kWorkspaceDice5Icon = {
++    kWorkspaceDice5Reps, std::size(kWorkspaceDice5Reps), "workspace_dice_5"};
++
++inline constexpr gfx::PathElement kWorkspaceCatPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 5,
++    gfx::CUBIC_TO, 12.67f, 5, 13.35f, 5.09f, 14, 5.26f,
++    gfx::CUBIC_TO, 15.78f, 3.26f, 19.03f, 2.42f, 20.42f, 3,
++    gfx::CUBIC_TO, 21.82f, 3.58f, 20, 10, 20, 10,
++    gfx::CUBIC_TO, 20.57f, 11.07f, 21, 12.24f, 21, 13.44f,
++    gfx::CUBIC_TO, 21, 17.9f, 16.97f, 21, 12, 21,
++    gfx::CUBIC_TO, 7.03f, 21, 3, 18, 3, 13.44f,
++    gfx::CUBIC_TO, 3, 12.19f, 3.5f, 11.04f, 4, 10,
++    gfx::CUBIC_TO, 4, 10, 2.11f, 3.58f, 3.5f, 3,
++    gfx::CUBIC_TO, 4.89f, 2.42f, 8.22f, 3.23f, 10, 5.23f,
++    gfx::CUBIC_TO, 10.656024f, 5.079109f, 11.326849f, 5.001964f, 12, 5,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 8, 14,
++    gfx::LINE_TO, 8, 14.5f,
++    gfx::MOVE_TO, 16, 14,
++    gfx::LINE_TO, 16, 14.5f,
++    gfx::MOVE_TO, 11.25f, 16.25f,
++    gfx::LINE_TO, 12.75f, 16.25f,
++    gfx::LINE_TO, 12, 17,
++    gfx::LINE_TO, 11.25f, 16.25f,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceCatReps[] = {{kWorkspaceCatPath}};
++inline constexpr gfx::VectorIcon kWorkspaceCatIcon = {
++    kWorkspaceCatReps, std::size(kWorkspaceCatReps), "workspace_cat"};
++
++inline constexpr gfx::PathElement kWorkspaceDogPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 11.25f, 16.25f,
++    gfx::LINE_TO, 12.75f, 16.25f,
++    gfx::LINE_TO, 12, 17,
++    gfx::LINE_TO, 11.25f, 16.25f,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 16, 14,
++    gfx::LINE_TO, 16, 14.5f,
++    gfx::MOVE_TO, 4.42f, 11.247f,
++    gfx::CUBIC_TO, 4.140132f, 12.327705f, 3.998997f, 13.439645f, 4, 14.556f,
++    gfx::CUBIC_TO, 4, 18.728f, 7.582f, 21, 12, 21,
++    gfx::CUBIC_TO, 16.418f, 21, 20, 18.728f, 20, 14.556f,
++    gfx::CUBIC_TO, 19.994999f, 13.435081f, 19.828969f, 12.320695f, 19.507f, 11.247f,
++    gfx::MOVE_TO, 8, 14,
++    gfx::LINE_TO, 8, 14.5f,
++    gfx::MOVE_TO, 8.5f, 8.5f,
++    gfx::CUBIC_TO, 8.116f, 9.55f, 7.417f, 10.528f, 6.156f, 11,
++    gfx::CUBIC_TO, 4.225f, 11.722f, 2.58f, 10.703f, 2.5f, 10,
++    gfx::CUBIC_TO, 2.387f, 9.006f, 3.677f, 3.47f, 6.5f, 3,
++    gfx::CUBIC_TO, 8.423f, 2.679f, 10.151f, 3.845f, 10.151f, 5.235f,
++    gfx::CUBIC_TO, 11.41579f, 4.913779f, 12.742521f, 4.928256f, 14, 5.277f,
++    gfx::CUBIC_TO, 14, 3.887f, 15.844f, 2.679f, 17.767f, 3,
++    gfx::CUBIC_TO, 20.59f, 3.47f, 21.88f, 9.006f, 21.767f, 10,
++    gfx::CUBIC_TO, 21.687f, 10.703f, 20.042f, 11.722f, 18.111f, 11,
++    gfx::CUBIC_TO, 16.85f, 10.528f, 16.256f, 9.55f, 15.872f, 8.5f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceDogReps[] = {{kWorkspaceDogPath}};
++inline constexpr gfx::VectorIcon kWorkspaceDogIcon = {
++    kWorkspaceDogReps, std::size(kWorkspaceDogReps), "workspace_dog"};
++
++inline constexpr gfx::PathElement kWorkspaceFlower2Path[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 5,
++    gfx::CUBIC_TO, 12, 3.343146f, 13.343146f, 2, 15, 2,
++    gfx::CUBIC_TO, 16.656854f, 2, 18, 3.343146f, 18, 5,
++    gfx::CUBIC_TO, 18, 6.656854f, 16.656854f, 8, 15, 8,
++    gfx::MOVE_TO, 12, 5,
++    gfx::CUBIC_TO, 12, 3.343146f, 10.656854f, 2, 9, 2,
++    gfx::CUBIC_TO, 7.343146f, 2, 6, 3.343146f, 6, 5,
++    gfx::CUBIC_TO, 6, 6.656854f, 7.343146f, 8, 9, 8,
++    gfx::MOVE_TO, 12, 5,
++    gfx::LINE_TO, 12, 6,
++    gfx::MOVE_TO, 9, 8,
++    gfx::CUBIC_TO, 7.343146f, 8, 6, 9.343146f, 6, 11,
++    gfx::CUBIC_TO, 6, 12.656854f, 7.343146f, 14, 9, 14,
++    gfx::CUBIC_TO, 10.656854f, 14, 12, 12.656854f, 12, 11,
++    gfx::MOVE_TO, 9, 8,
++    gfx::LINE_TO, 10, 8,
++    gfx::MOVE_TO, 15, 8,
++    gfx::CUBIC_TO, 16.656854f, 8, 18, 9.343146f, 18, 11,
++    gfx::CUBIC_TO, 18, 12.656854f, 16.656854f, 14, 15, 14,
++    gfx::CUBIC_TO, 13.343146f, 14, 12, 12.656854f, 12, 11,
++    gfx::MOVE_TO, 15, 8,
++    gfx::LINE_TO, 14, 8,
++    gfx::MOVE_TO, 12, 11,
++    gfx::LINE_TO, 12, 10,
++    gfx::MOVE_TO, 10, 8,
++    gfx::CUBIC_TO, 10, 6.895431f, 10.895431f, 6, 12, 6,
++    gfx::CUBIC_TO, 13.104569f, 6, 14, 6.895431f, 14, 8,
++    gfx::CUBIC_TO, 14, 9.104569f, 13.104569f, 10, 12, 10,
++    gfx::CUBIC_TO, 10.895431f, 10, 10, 9.104569f, 10, 8,
++    gfx::MOVE_TO, 12, 10,
++    gfx::LINE_TO, 12, 22,
++    gfx::MOVE_TO, 12, 22,
++    gfx::CUBIC_TO, 16.2f, 22, 19, 20.333f, 19, 17,
++    gfx::CUBIC_TO, 14.8f, 17, 12, 18.667f, 12, 22,
++    gfx::CLOSE,
++    gfx::MOVE_TO, 12, 22,
++    gfx::CUBIC_TO, 7.8f, 22, 5, 20.333f, 5, 17,
++    gfx::CUBIC_TO, 9.2f, 17, 12, 18.667f, 12, 22,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceFlower2Reps[] = {
++    {kWorkspaceFlower2Path}};
++inline constexpr gfx::VectorIcon kWorkspaceFlower2Icon = {
++    kWorkspaceFlower2Reps, std::size(kWorkspaceFlower2Reps),
++    "workspace_flower_2"};
++
++inline constexpr gfx::PathElement kWorkspaceMoonPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 20.985f, 12.486f,
++    gfx::CUBIC_TO, 20.72386f, 17.323496f, 16.680379f, 21.086329f, 11.83662f, 20.999415f,
++    gfx::CUBIC_TO, 6.99286f, 20.912502f, 3.086976f, 17.007029f, 2.999551f, 12.163279f,
++    gfx::CUBIC_TO, 2.912125f, 7.319529f, 6.674532f, 3.275651f, 11.512f, 3.014f,
++    gfx::CUBIC_TO, 11.917f, 2.992f, 12.129f, 3.474f, 11.914f, 3.817f,
++    gfx::CUBIC_TO, 10.433186f, 6.186257f, 10.783697f, 9.264054f, 12.759322f, 11.239678f,
++    gfx::CUBIC_TO, 14.734946f, 13.215303f, 17.812743f, 13.565814f, 20.182f, 12.085f,
++    gfx::CUBIC_TO, 20.526f, 11.87f, 21.007f, 12.081f, 20.985f, 12.486f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceMoonReps[] = {
++    {kWorkspaceMoonPath}};
++inline constexpr gfx::VectorIcon kWorkspaceMoonIcon = {
++    kWorkspaceMoonReps, std::size(kWorkspaceMoonReps), "workspace_moon"};
++
++inline constexpr gfx::PathElement kWorkspaceSunPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 8, 12,
++    gfx::CUBIC_TO, 8, 9.790861f, 9.790861f, 8, 12, 8,
++    gfx::CUBIC_TO, 14.209139f, 8, 16, 9.790861f, 16, 12,
++    gfx::CUBIC_TO, 16, 14.209139f, 14.209139f, 16, 12, 16,
++    gfx::CUBIC_TO, 9.790861f, 16, 8, 14.209139f, 8, 12,
++    gfx::MOVE_TO, 12, 2,
++    gfx::LINE_TO, 12, 4,
++    gfx::MOVE_TO, 12, 20,
++    gfx::LINE_TO, 12, 22,
++    gfx::MOVE_TO, 4.93f, 4.93f,
++    gfx::LINE_TO, 6.34f, 6.34f,
++    gfx::MOVE_TO, 17.66f, 17.66f,
++    gfx::LINE_TO, 19.07f, 19.07f,
++    gfx::MOVE_TO, 2, 12,
++    gfx::LINE_TO, 4, 12,
++    gfx::MOVE_TO, 20, 12,
++    gfx::LINE_TO, 22, 12,
++    gfx::MOVE_TO, 6.34f, 17.66f,
++    gfx::LINE_TO, 4.93f, 19.07f,
++    gfx::MOVE_TO, 19.07f, 4.93f,
++    gfx::LINE_TO, 17.66f, 6.34f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceSunReps[] = {{kWorkspaceSunPath}};
++inline constexpr gfx::VectorIcon kWorkspaceSunIcon = {
++    kWorkspaceSunReps, std::size(kWorkspaceSunReps), "workspace_sun"};
++
++inline constexpr gfx::PathElement kWorkspaceCloverPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 16.17f, 7.83f,
++    gfx::LINE_TO, 2, 22,
++    gfx::MOVE_TO, 4.02f, 12,
++    gfx::CUBIC_TO, 3.221986f, 11.333269f, 2.854432f, 10.282255f, 3.06301f, 9.263505f,
++    gfx::CUBIC_TO, 3.271588f, 8.244755f, 4.02262f, 7.422759f, 5.018451f, 7.123298f,
++    gfx::CUBIC_TO, 6.014282f, 6.823836f, 7.094122f, 7.095262f, 7.83f, 7.83f,
++    gfx::CUBIC_TO, 7.095262f, 7.094122f, 6.823836f, 6.014282f, 7.123298f, 5.018451f,
++    gfx::CUBIC_TO, 7.422759f, 4.02262f, 8.244755f, 3.271588f, 9.263505f, 3.06301f,
++    gfx::CUBIC_TO, 10.282255f, 2.854432f, 11.333269f, 3.221986f, 12, 4.02f,
++    gfx::CUBIC_TO, 12.666731f, 3.221986f, 13.717745f, 2.854432f, 14.736495f, 3.06301f,
++    gfx::CUBIC_TO, 15.755245f, 3.271588f, 16.577241f, 4.02262f, 16.876702f, 5.018451f,
++    gfx::CUBIC_TO, 17.176164f, 6.014282f, 16.904738f, 7.094122f, 16.17f, 7.83f,
++    gfx::CUBIC_TO, 16.905878f, 7.095262f, 17.985718f, 6.823836f, 18.981549f, 7.123298f,
++    gfx::CUBIC_TO, 19.97738f, 7.422759f, 20.728412f, 8.244755f, 20.93699f, 9.263505f,
++    gfx::CUBIC_TO, 21.145568f, 10.282255f, 20.778014f, 11.333269f, 19.98f, 12,
++    gfx::CUBIC_TO, 20.778014f, 12.666731f, 21.145568f, 13.717745f, 20.93699f, 14.736495f,
++    gfx::CUBIC_TO, 20.728412f, 15.755245f, 19.97738f, 16.577241f, 18.981549f, 16.876702f,
++    gfx::CUBIC_TO, 17.985718f, 17.176164f, 16.905878f, 16.904738f, 16.17f, 16.17f,
++    gfx::CUBIC_TO, 16.904738f, 16.905878f, 17.176164f, 17.985718f, 16.876702f, 18.981549f,
++    gfx::CUBIC_TO, 16.577241f, 19.97738f, 15.755245f, 20.728412f, 14.736495f, 20.93699f,
++    gfx::CUBIC_TO, 13.717745f, 21.145568f, 12.666731f, 20.778014f, 12, 19.98f,
++    gfx::CUBIC_TO, 11.333269f, 20.778014f, 10.282255f, 21.145568f, 9.263505f, 20.93699f,
++    gfx::CUBIC_TO, 8.244755f, 20.728412f, 7.422759f, 19.97738f, 7.123298f, 18.981549f,
++    gfx::CUBIC_TO, 6.823836f, 17.985718f, 7.095262f, 16.905878f, 7.83f, 16.17f,
++    gfx::CUBIC_TO, 6.678486f, 17.227625f, 4.887625f, 17.151514f, 3.83f, 16,
++    gfx::CUBIC_TO, 2.772375f, 14.848486f, 2.848486f, 13.057625f, 4, 12,
++    gfx::MOVE_TO, 7.83f, 7.83f,
++    gfx::LINE_TO, 16.17f, 16.17f,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceCloverReps[] = {
++    {kWorkspaceCloverPath}};
++inline constexpr gfx::VectorIcon kWorkspaceCloverIcon = {
++    kWorkspaceCloverReps, std::size(kWorkspaceCloverReps), "workspace_clover"};
++
++inline constexpr gfx::PathElement kWorkspaceGiftPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 12, 7,
++    gfx::LINE_TO, 12, 21,
++    gfx::MOVE_TO, 20, 11,
++    gfx::LINE_TO, 20, 19,
++    gfx::CUBIC_TO, 20, 20.104569f, 19.104569f, 21, 18, 21,
++    gfx::LINE_TO, 6, 21,
++    gfx::CUBIC_TO, 4.895431f, 21, 4, 20.104569f, 4, 19,
++    gfx::LINE_TO, 4, 11,
++    gfx::MOVE_TO, 7.5f, 7,
++    gfx::CUBIC_TO, 6.119288f, 7, 5, 5.880712f, 5, 4.5f,
++    gfx::CUBIC_TO, 5, 3.119288f, 6.119288f, 2, 7.5f, 2,
++    gfx::CUBIC_TO, 9.474231f, 1.965603f, 11.259731f, 3.949491f, 12, 7,
++    gfx::CUBIC_TO, 12.740269f, 3.949491f, 14.525769f, 1.965603f, 16.5f, 2,
++    gfx::CUBIC_TO, 17.880712f, 2, 19, 3.119288f, 19, 4.5f,
++    gfx::CUBIC_TO, 19, 5.880712f, 17.880712f, 7, 16.5f, 7,
++    gfx::MOVE_TO, 4, 7,
++    gfx::LINE_TO, 20, 7,
++    gfx::CUBIC_TO, 20.552285f, 7, 21, 7.447715f, 21, 8,
++    gfx::LINE_TO, 21, 10,
++    gfx::CUBIC_TO, 21, 10.552285f, 20.552285f, 11, 20, 11,
++    gfx::LINE_TO, 4, 11,
++    gfx::CUBIC_TO, 3.447715f, 11, 3, 10.552285f, 3, 10,
++    gfx::LINE_TO, 3, 8,
++    gfx::CUBIC_TO, 3, 7.447715f, 3.447715f, 7, 4, 7,
++    gfx::CLOSE,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceGiftReps[] = {
++    {kWorkspaceGiftPath}};
++inline constexpr gfx::VectorIcon kWorkspaceGiftIcon = {
++    kWorkspaceGiftReps, std::size(kWorkspaceGiftReps), "workspace_gift"};
++
++inline constexpr gfx::PathElement kWorkspaceLuggagePath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 6, 20,
++    gfx::CUBIC_TO, 4.895431f, 20, 4, 19.104569f, 4, 18,
++    gfx::LINE_TO, 4, 8,
++    gfx::CUBIC_TO, 4, 6.895431f, 4.895431f, 6, 6, 6,
++    gfx::LINE_TO, 18, 6,
++    gfx::CUBIC_TO, 19.104569f, 6, 20, 6.895431f, 20, 8,
++    gfx::LINE_TO, 20, 18,
++    gfx::CUBIC_TO, 20, 19.104569f, 19.104569f, 20, 18, 20,
++    gfx::MOVE_TO, 8, 18,
++    gfx::LINE_TO, 8, 4,
++    gfx::CUBIC_TO, 8, 2.895431f, 8.895431f, 2, 10, 2,
++    gfx::LINE_TO, 14, 2,
++    gfx::CUBIC_TO, 15.104569f, 2, 16, 2.895431f, 16, 4,
++    gfx::LINE_TO, 16, 18,
++    gfx::MOVE_TO, 10, 20,
++    gfx::LINE_TO, 14, 20,
++    gfx::MOVE_TO, 14, 20,
++    gfx::CUBIC_TO, 14, 18.895431f, 14.895431f, 18, 16, 18,
++    gfx::CUBIC_TO, 17.104569f, 18, 18, 18.895431f, 18, 20,
++    gfx::CUBIC_TO, 18, 21.104569f, 17.104569f, 22, 16, 22,
++    gfx::CUBIC_TO, 14.895431f, 22, 14, 21.104569f, 14, 20,
++    gfx::MOVE_TO, 6, 20,
++    gfx::CUBIC_TO, 6, 18.895431f, 6.895431f, 18, 8, 18,
++    gfx::CUBIC_TO, 9.104569f, 18, 10, 18.895431f, 10, 20,
++    gfx::CUBIC_TO, 10, 21.104569f, 9.104569f, 22, 8, 22,
++    gfx::CUBIC_TO, 6.895431f, 22, 6, 21.104569f, 6, 20,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceLuggageReps[] = {
++    {kWorkspaceLuggagePath}};
++inline constexpr gfx::VectorIcon kWorkspaceLuggageIcon = {
++    kWorkspaceLuggageReps, std::size(kWorkspaceLuggageReps),
++    "workspace_luggage"};
++
++inline constexpr gfx::PathElement kWorkspaceCarPath[] = {
++    gfx::CANVAS_DIMENSIONS, 24,
++    gfx::STROKE, 2,
++    gfx::MOVE_TO, 19, 17,
++    gfx::LINE_TO, 21, 17,
++    gfx::CUBIC_TO, 21.6f, 17, 22, 16.6f, 22, 16,
++    gfx::LINE_TO, 22, 13,
++    gfx::CUBIC_TO, 22, 12.1f, 21.3f, 11.3f, 20.5f, 11.1f,
++    gfx::CUBIC_TO, 18.7f, 10.6f, 16, 10, 16, 10,
++    gfx::CUBIC_TO, 16, 10, 14.7f, 8.6f, 13.8f, 7.7f,
++    gfx::CUBIC_TO, 13.3f, 7.3f, 12.7f, 7, 12, 7,
++    gfx::LINE_TO, 5, 7,
++    gfx::CUBIC_TO, 4.4f, 7, 3.9f, 7.4f, 3.6f, 7.9f,
++    gfx::LINE_TO, 2.2f, 10.8f,
++    gfx::CUBIC_TO, 2.06758f, 11.186225f, 2, 11.591705f, 2, 12,
++    gfx::LINE_TO, 2, 16,
++    gfx::CUBIC_TO, 2, 16.6f, 2.4f, 17, 3, 17,
++    gfx::LINE_TO, 5, 17,
++    gfx::MOVE_TO, 5, 17,
++    gfx::CUBIC_TO, 5, 15.895431f, 5.895431f, 15, 7, 15,
++    gfx::CUBIC_TO, 8.104569f, 15, 9, 15.895431f, 9, 17,
++    gfx::CUBIC_TO, 9, 18.104569f, 8.104569f, 19, 7, 19,
++    gfx::CUBIC_TO, 5.895431f, 19, 5, 18.104569f, 5, 17,
++    gfx::MOVE_TO, 9, 17,
++    gfx::LINE_TO, 15, 17,
++    gfx::MOVE_TO, 15, 17,
++    gfx::CUBIC_TO, 15, 15.895431f, 15.895431f, 15, 17, 15,
++    gfx::CUBIC_TO, 18.104569f, 15, 19, 15.895431f, 19, 17,
++    gfx::CUBIC_TO, 19, 18.104569f, 18.104569f, 19, 17, 19,
++    gfx::CUBIC_TO, 15.895431f, 19, 15, 18.104569f, 15, 17,
++};
++inline constexpr gfx::VectorIconRep kWorkspaceCarReps[] = {{kWorkspaceCarPath}};
++inline constexpr gfx::VectorIcon kWorkspaceCarIcon = {
++    kWorkspaceCarReps, std::size(kWorkspaceCarReps), "workspace_car"};
++
++inline constexpr auto kWorkspaceVectorIcons =
++    std::to_array<const gfx::VectorIcon*>({
++        &kWorkspaceHouseIcon,
++        &kWorkspaceBriefcaseBusinessIcon,
++        &kWorkspaceLaptopIcon,
++        &kWorkspaceBookOpenIcon,
++        &kWorkspaceGraduationCapIcon,
++        &kWorkspaceGamepad2Icon,
++        &kWorkspaceMusicIcon,
++        &kWorkspaceClapperboardIcon,
++        &kWorkspacePaletteIcon,
++        &kWorkspaceCameraIcon,
++        &kWorkspaceNotebookPenIcon,
++        &kWorkspaceMicroscopeIcon,
++        &kWorkspaceLightbulbIcon,
++        &kWorkspaceRocketIcon,
++        &kWorkspaceShoppingCartIcon,
++        &kWorkspaceCoinsIcon,
++        &kWorkspaceChartNoAxesCombinedIcon,
++        &kWorkspaceFolderIcon,
++        &kWorkspacePinIcon,
++        &kWorkspaceCalendarIcon,
++        &kWorkspaceMailIcon,
++        &kWorkspaceMessageCircleIcon,
++        &kWorkspaceGlobeIcon,
++        &kWorkspaceLockIcon,
++        &kWorkspaceWrenchIcon,
++        &kWorkspaceFlaskConicalIcon,
++        &kWorkspaceBrainIcon,
++        &kWorkspaceHeartIcon,
++        &kWorkspaceStarIcon,
++        &kWorkspaceFlameIcon,
++        &kWorkspaceSproutIcon,
++        &kWorkspaceEarthIcon,
++        &kWorkspaceHamburgerIcon,
++        &kWorkspaceCoffeeIcon,
++        &kWorkspaceTrophyIcon,
++        &kWorkspaceDumbbellIcon,
++        &kWorkspaceHeadphonesIcon,
++        &kWorkspaceTvIcon,
++        &kWorkspaceDice5Icon,
++        &kWorkspaceCatIcon,
++        &kWorkspaceDogIcon,
++        &kWorkspaceFlower2Icon,
++        &kWorkspaceMoonIcon,
++        &kWorkspaceSunIcon,
++        &kWorkspaceCloverIcon,
++        &kWorkspaceGiftIcon,
++        &kWorkspaceLuggageIcon,
++        &kWorkspaceCarIcon,
++    });
++
++}  // namespace workspaces
++
++#endif
+diff --git a/chrome/browser/ui/views/side_panel/side_panel.cc b/chrome/browser/ui/views/side_panel/side_panel.cc
+index 25dd2d748..33129843b 100644
+--- a/chrome/browser/ui/views/side_panel/side_panel.cc
++++ b/chrome/browser/ui/views/side_panel/side_panel.cc
+@@ -744,6 +744,7 @@ void SidePanel::UpdateVisibility(bool should_be_open, bool animate_transition) {
+     animation_controller->Clear(kAnimationGroup);
+     SetVisible(should_be_open);
+   }
++  browser_view_->OnSidePanelVisibilityChanged();
+ }
+ 
+ double SidePanel::GetAnimationValueFor(BrowserAnimationSequence which) const {
