@@ -769,10 +769,10 @@ index 47f4f372e..874fa65c7 100644
    registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.cc b/chrome/browser/ui/workspaces/workspace_controller.cc
 new file mode 100644
-index 000000000..f86806c78
+index 000000000..1092d1078
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.cc
-@@ -0,0 +1,632 @@
+@@ -0,0 +1,646 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -822,6 +822,7 @@ index 000000000..f86806c78
 +constexpr char kNameKey[] = "name";
 +constexpr char kIconKey[] = "icon";
 +constexpr char kColorKey[] = "color";
++constexpr char kPinnedCollapsedKey[] = "pinned_collapsed";
 +constexpr char kEssentialsId[] = "essentials";
 +
 +std::string NewId() {
@@ -928,7 +929,8 @@ index 000000000..f86806c78
 +                    .Set(kIdKey, workspace.id)
 +                    .Set(kNameKey, base::UTF16ToUTF8(workspace.name))
 +                    .Set(kIconKey, base::UTF16ToUTF8(workspace.icon))
-+                    .Set(kColorKey, static_cast<int>(workspace.color)));
++                    .Set(kColorKey, static_cast<int>(workspace.color))
++                    .Set(kPinnedCollapsedKey, workspace.pinned_collapsed));
 +  }
 +  return base::WriteJson(base::DictValue()
 +                             .Set(kActiveKey, active)
@@ -965,7 +967,8 @@ index 000000000..f86806c78
 +      return false;
 +    }
 +    result.push_back({*id, base::UTF8ToUTF16(*name), base::UTF8ToUTF16(*icon),
-+                      static_cast<tab_groups::TabGroupColorId>(*color)});
++                      static_cast<tab_groups::TabGroupColorId>(*color),
++                      dict->FindBool(kPinnedCollapsedKey).value_or(false)});
 +  }
 +  const std::string* active_id = root->FindString(kActiveKey);
 +  *workspaces = std::move(result);
@@ -984,6 +987,11 @@ index 000000000..f86806c78
 +
 +bool WorkspaceController::IsEssential(const tabs::TabInterface* tab) const {
 +  return tab && GetWorkspaceIdOf(tab) == kEssentialsId;
++}
++
++bool WorkspaceController::IsWorkspacePinned(
++    const tabs::TabInterface* tab) const {
++  return tab && tab->IsPinned() && IsFilteringTabs() && !IsEssential(tab);
 +}
 +
 +void WorkspaceController::ActivateWorkspace(const std::string& id) {
@@ -1404,13 +1412,19 @@ index 000000000..f86806c78
 +  weak_factory_.InvalidateWeakPtrs();
 +}
 +
++bool IsPinnedTile(tabs::TabInterface* tab) {
++  const auto* controller =
++      WorkspaceController::From(tab->GetBrowserWindowInterface());
++  return tab->IsPinned() && !(controller && controller->IsWorkspacePinned(tab));
++}
++
 +}  // namespace workspaces
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.h b/chrome/browser/ui/workspaces/workspace_controller.h
 new file mode 100644
-index 000000000..61272c6e3
+index 000000000..d2542aa5c
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.h
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,167 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1455,6 +1469,7 @@ index 000000000..61272c6e3
 +  std::u16string name;
 +  std::u16string icon;
 +  tab_groups::TabGroupColorId color = tab_groups::TabGroupColorId::kGrey;
++  bool pinned_collapsed = false;
 +
 +  bool operator==(const Workspace&) const = default;
 +};
@@ -1494,6 +1509,9 @@ index 000000000..61272c6e3
 +  // Returns nullptr for Essentials.
 +  const Workspace* GetWorkspaceOf(const tabs::TabInterface* tab) const;
 +  bool IsEssential(const tabs::TabInterface* tab) const;
++  // Returns true for pinned tabs of a workspace, which the vertical tab strip
++  // shows as rows below the Essentials tiles.
++  bool IsWorkspacePinned(const tabs::TabInterface* tab) const;
 +
 +  void ActivateWorkspace(const std::string& id);
 +  void ActivateWorkspaceAt(int index);
@@ -1567,15 +1585,19 @@ index 000000000..61272c6e3
 +  base::WeakPtrFactory<WorkspaceController> weak_factory_{this};
 +};
 +
++// Returns true if `tab` is pinned and shown as a tile: an Essential, or any
++// pinned tab while workspaces don't filter tabs.
++bool IsPinnedTile(tabs::TabInterface* tab);
++
 +}  // namespace workspaces
 +
 +#endif  // CHROME_BROWSER_UI_WORKSPACES_WORKSPACE_CONTROLLER_H_
 diff --git a/chrome/browser/ui/workspaces/workspace_controller_unittest.cc b/chrome/browser/ui/workspaces/workspace_controller_unittest.cc
 new file mode 100644
-index 000000000..1484df57d
+index 000000000..5248e9f28
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller_unittest.cc
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,289 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1805,7 +1827,8 @@ index 000000000..1484df57d
 +TEST_F(WorkspaceControllerTest, SerializeRoundTrip) {
 +  const std::vector<Workspace> workspaces = {
 +      {"a", u"Work", u"💼", tab_groups::TabGroupColorId::kBlue},
-+      {"b", u"Home", u"", tab_groups::TabGroupColorId::kGreen},
++      {"b", u"Home", u"", tab_groups::TabGroupColorId::kGreen,
++       /*pinned_collapsed=*/true},
 +  };
 +  std::vector<Workspace> parsed;
 +  std::string active;

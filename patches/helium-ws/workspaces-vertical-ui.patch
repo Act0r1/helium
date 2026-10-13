@@ -104,44 +104,477 @@ index b7478d5cb..843335c5d 100644
    // BrowserRootView::DropTarget:
    void HandleDragUpdate(
        const std::optional<BrowserRootView::DropIndex>& index) override;
+diff --git a/chrome/browser/ui/views/side_panel/side_panel.cc b/chrome/browser/ui/views/side_panel/side_panel.cc
+index 25dd2d748..33129843b 100644
+--- a/chrome/browser/ui/views/side_panel/side_panel.cc
++++ b/chrome/browser/ui/views/side_panel/side_panel.cc
+@@ -744,6 +744,7 @@ void SidePanel::UpdateVisibility(bool should_be_open, bool animate_transition) {
+     animation_controller->Clear(kAnimationGroup);
+     SetVisible(should_be_open);
+   }
++  browser_view_->OnSidePanelVisibilityChanged();
+ }
+ 
+ double SidePanel::GetAnimationValueFor(BrowserAnimationSequence which) const {
 diff --git a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
-index e2d93808d..0535cea4e 100644
+index e2d93808d..0ad9b13fd 100644
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
-@@ -116,7 +116,12 @@ gfx::Size PinnedTabContainerView::GetMinimumSize() const {
+@@ -4,10 +4,16 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
+ 
++#include <utility>
++#include <vector>
++
+ #include "base/i18n/rtl.h"
++#include "cc/paint/paint_flags.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/tabs/tab_style.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
+ #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
+ #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
+@@ -15,9 +21,22 @@
+ #include "chrome/browser/ui/views/tabs/common/tab_drag_handler.h"
+ #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+ #include "chrome/browser/ui/views/tabs/common/tab_view.h"
++#include "chrome/browser/ui/views/workspaces/workspace_switcher_view.h"
++#include "chrome/grit/generated_resources.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/navigation_controller.h"
++#include "third_party/skia/include/core/SkPathBuilder.h"
++#include "ui/base/l10n/l10n_util.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_provider.h"
++#include "ui/gfx/animation/tween.h"
++#include "ui/gfx/canvas.h"
+ #include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/scoped_canvas.h"
++#include "ui/gfx/text_utils.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/button/button.h"
++#include "ui/views/controls/label.h"
+ #include "ui/views/controls/scroll_view.h"
+ #include "ui/views/layout/delegating_layout_manager.h"
+ #include "ui/views/layout/layout_types.h"
+@@ -28,8 +47,142 @@
+ 
+ namespace {
+ constexpr int kTabPadding = 4;
++constexpr int kRowPadding = 2;
++constexpr int kTopBandHeight = 16;
++constexpr int kBottomBandHeight = 9;
++constexpr int kBandInset = 2;
++constexpr int kBandGap = 6;
++constexpr int kChevronSize = 14;
++constexpr base::TimeDelta kRowsAnimationDuration = base::Milliseconds(200);
++
++const tabs::TabInterface* GetFirstTab(const TabCollectionNode& node) {
++  const TabCollectionNode* first = &node;
++  while (first->type() != TabCollectionNode::Type::TAB &&
++         !first->children().empty()) {
++    first = first->children().front().get();
++  }
++  return first->type() == TabCollectionNode::Type::TAB
++             ? std::get<tabs::ConstDanglingUntriagedTabInterface>(
++                   first->GetNodeData())
++             : nullptr;
++}
++
++bool ContainsActiveTab(const TabCollectionNode& node) {
++  if (node.type() == TabCollectionNode::Type::TAB) {
++    return std::get<tabs::ConstDanglingUntriagedTabInterface>(
++               node.GetNodeData())
++        ->IsActivated();
++  }
++  return std::ranges::any_of(node.children(), [](const auto& child) {
++    return ContainsActiveTab(*child);
++  });
++}
+ }  // namespace
+ 
++// A line above or below the pinned rows of a workspace. The top band toggles
++// the rows with its chevron and counts the rows hidden while collapsed.
++class PinnedTabsBandView : public views::Button {
++  METADATA_HEADER(PinnedTabsBandView, views::Button)
++
++ public:
++  PinnedTabsBandView(PressedCallback callback, bool top)
++      : Button(std::move(callback)),
++        top_(top),
++        font_list_(views::Label::GetDefaultFontList().DeriveWithSizeDelta(-2)) {
++    if (!top_) {
++      SetFocusBehavior(FocusBehavior::NEVER);
++      SetCanProcessEventsWithinSubtree(false);
++      GetViewAccessibility().SetIsIgnored(true);
++    }
++  }
++  PinnedTabsBandView(const PinnedTabsBandView&) = delete;
++  PinnedTabsBandView& operator=(const PinnedTabsBandView&) = delete;
++  ~PinnedTabsBandView() override = default;
++
++  // `expanded` runs from 0 while collapsed to 1 while expanded.
++  void SetState(bool collapsed, double expanded, int hidden_count) {
++    if (!top_) {
++      return;
++    }
++    const std::u16string name = l10n_util::GetStringUTF16(
++        collapsed ? IDS_WORKSPACE_PINNED_EXPAND : IDS_WORKSPACE_PINNED_COLLAPSE);
++    GetViewAccessibility().SetName(name);
++    SetTooltipText(name);
++    expanded_ = expanded;
++    hidden_count_ = hidden_count;
++    SchedulePaint();
++  }
++
++  gfx::Size CalculatePreferredSize(
++      const views::SizeBounds& available_size) const override {
++    return gfx::Size(0, top_ ? kTopBandHeight : kBottomBandHeight);
++  }
++
++  void PaintButtonContents(gfx::Canvas* canvas) override {
++    const ui::ColorProvider* provider = GetColorProvider();
++    if (!provider) {
++      return;
++    }
++    int line_end = width() - kBandInset;
++    if (top_) {
++      const SkColor color = provider->GetColor(
++          GetState() == STATE_HOVERED || GetState() == STATE_PRESSED
++              ? kColorTabForegroundActiveFrameActive
++              : kColorTabForegroundInactiveFrameActive);
++      const gfx::Rect chevron(width() - kBandInset - kChevronSize,
++                              (height() - kChevronSize) / 2, kChevronSize,
++                              kChevronSize);
++      line_end = chevron.x() - kBandGap;
++
++      if (hidden_count_ > 0 && expanded_ < 1) {
++        const std::u16string text = l10n_util::GetPluralStringFUTF16(
++            IDS_WORKSPACE_PINNED_HIDDEN, hidden_count_);
++        const int text_width = gfx::GetStringWidth(text, font_list_);
++        if (line_end - text_width - kBandGap >= kChevronSize) {
++          const gfx::Rect text_bounds(line_end - text_width, 0, text_width,
++                                      height());
++          canvas->DrawStringRect(
++              text, font_list_,
++              SkColorSetA(color, static_cast<U8CPU>(SkColorGetA(color) *
++                                                    (1 - expanded_))),
++              text_bounds);
++          line_end = text_bounds.x() - kBandGap;
++        }
++      }
++
++      cc::PaintFlags flags;
++      flags.setAntiAlias(true);
++      flags.setStyle(cc::PaintFlags::kStroke_Style);
++      flags.setStrokeWidth(1.6f);
++      flags.setStrokeCap(cc::PaintFlags::kRound_Cap);
++      flags.setStrokeJoin(cc::PaintFlags::kRound_Join);
++      flags.setColor(color);
++      gfx::ScopedCanvas scoped_canvas(canvas);
++      canvas->Translate(chevron.CenterPoint().OffsetFromOrigin());
++      canvas->sk_canvas()->rotate(-90.0f * static_cast<float>(1 - expanded_));
++      canvas->DrawPath(SkPathBuilder()
++                           .moveTo(-3.5f, -1.75f)
++                           .lineTo(0, 1.75f)
++                           .lineTo(3.5f, -1.75f)
++                           .detach(),
++                       flags);
++    }
++    canvas->FillRect(
++        gfx::Rect(kBandInset, height() / 2, std::max(0, line_end - kBandInset),
++                  1),
++        provider->GetColor(kColorTabDividerFrameActive));
++  }
++
++ private:
++  const bool top_;
++  const gfx::FontList font_list_;
++  double expanded_ = 1;
++  int hidden_count_ = 0;
++};
++
++BEGIN_METADATA(PinnedTabsBandView)
++END_METADATA
++
+ PinnedTabContainerView::PinnedTabContainerView(
+     TabCollectionNode* collection_node)
+     : DraggedTabsContainer(
+@@ -73,6 +226,24 @@ PinnedTabContainerView::PinnedTabContainerView(
+               &PinnedTabContainerView::OnCollapseStateChanged,
+               base::Unretained(this)));
+     }
++
++    BrowserWindowInterface* browser =
++        collection_node_->GetController()->GetBrowserView()->browser();
++    if (auto* controller = workspaces::WorkspaceController::From(browser)) {
++      workspace_observation_.Observe(controller);
++      workspace_header_ =
++          AddChildView(workspaces::CreateWorkspaceHeaderView(browser));
++      top_band_ = AddChildView(std::make_unique<PinnedTabsBandView>(
++          base::BindRepeating(&PinnedTabContainerView::ToggleRowsCollapsed,
++                              base::Unretained(this)),
++          /*top=*/true));
++      bottom_band_ = AddChildView(std::make_unique<PinnedTabsBandView>(
++          views::Button::PressedCallback(), /*top=*/false));
++      rows_animation_.SetSlideDuration(kRowsAnimationDuration);
++      rows_animation_.SetTweenType(gfx::Tween::EASE_IN_OUT);
++      rows_animation_.Reset(1);
++      UpdateRowsCollapsed(/*animate=*/false);
++    }
+   }
+ }
+ 
+@@ -84,11 +255,22 @@ views::ProposedLayout PinnedTabContainerView::CalculateProposedLayout(
+       collection_node_->orientation() == TabStripOrientation::kHorizontal) {
+     return CalculateHorizontalLayout(size_bounds);
+   }
+-  return CalculateVerticalLayout(size_bounds);
++  return CalculateVerticalLayout(size_bounds, rows_collapsed_);
++}
++
++gfx::Size PinnedTabContainerView::CalculatePreferredSize(
++    const views::SizeBounds& available_size) const {
++  gfx::Size size =
++      TabCollectionZOrderManager::CalculatePreferredSize(available_size);
++  size.set_height(GetAnimatedHeight(available_size, size.height()));
++  return size;
+ }
+ 
+ gfx::Size PinnedTabContainerView::GetMinimumSize() const {
+-  if (!collection_node_ || collection_node_->GetDirectChildren().empty()) {
++  const bool show_header = IsShowingWorkspaceRows() && workspace_header_ &&
++                           layout_manager_->CanBeVisible(workspace_header_);
++  if (!collection_node_ ||
++      (collection_node_->GetDirectChildren().empty() && !show_header)) {
+     return gfx::Size();
+   }
+ 
+@@ -116,15 +298,27 @@ gfx::Size PinnedTabContainerView::GetMinimumSize() const {
  
    // The minimum size should be enough to show a row and a half, if needed.
    auto collapse_state = GetTabStripCollapseState();
 -  const int num_children = collection_node_->GetDirectChildren().size();
++  const auto* controller =
++      IsShowingWorkspaceRows() ? workspace_observation_.GetSource() : nullptr;
 +  int num_children = 0;
-+  for (const auto* child : collection_node_->GetDirectChildren()) {
-+    if (layout_manager_->CanBeVisible(child)) {
++  for (const auto& node : collection_node_->children()) {
++    if (layout_manager_->CanBeVisible(node->view()) &&
++        !(controller && controller->IsWorkspacePinned(GetFirstTab(*node)))) {
 +      num_children++;
 +    }
 +  }
    const float min_rows = std::min(
        (collapse_state != tabs::VerticalTabStripCollapseState::kExpanded ? 1.5f
                                                                          : 1.0f),
-@@ -382,9 +387,17 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+       static_cast<float>(num_children));
+-  const int min_height =
++  int min_height =
+       base::ClampCeil(GetLayoutConstant(LayoutConstant::kVerticalTabHeight) *
+                       min_rows) +
+       (num_children > 1 ? kTabPadding : 0);
++  if (show_header) {
++    min_height += (num_children > 0 ? kTabPadding : 0) +
++                  workspace_header_->GetPreferredSize().height();
++  }
+   return gfx::Size(GetLayoutConstant(LayoutConstant::kVerticalTabMinWidth),
+                    min_height);
+ }
+@@ -292,9 +486,117 @@ PinnedTabContainerView::GetLinkDropIndexForExpanded(
+ 
+ void PinnedTabContainerView::ResetCollectionNode() {
+   collapsed_state_changed_subscription_ = {};
++  workspace_observation_.Reset();
+   collection_node_ = nullptr;
+ }
+ 
++bool PinnedTabContainerView::IsShowingWorkspaceRows() const {
++  return collection_node_ && workspace_observation_.IsObserving() &&
++         workspace_observation_.GetSource()->IsFilteringTabs();
++}
++
++int PinnedTabContainerView::GetAnimatedHeight(
++    const views::SizeBounds& size_bounds,
++    int height) const {
++  if (!rows_animation_.is_animating() || !IsShowingWorkspaceRows()) {
++    return height;
++  }
++  return gfx::Tween::IntValueBetween(
++      rows_animation_.GetCurrentValue(),
++      CalculateVerticalLayout(size_bounds, /*rows_collapsed=*/true)
++          .host_size.height(),
++      CalculateVerticalLayout(size_bounds, /*rows_collapsed=*/false)
++          .host_size.height());
++}
++
++void PinnedTabContainerView::ToggleRowsCollapsed() {
++  if (!workspace_observation_.IsObserving()) {
++    return;
++  }
++  workspaces::WorkspaceController* controller =
++      workspace_observation_.GetSource();
++  const workspaces::Workspace* active = controller->GetActiveWorkspace();
++  if (!active) {
++    return;
++  }
++  workspaces::Workspace workspace = *active;
++  workspace.pinned_collapsed = !workspace.pinned_collapsed;
++  controller->UpdateWorkspace(workspace);
++}
++
++void PinnedTabContainerView::UpdateRowsCollapsed(bool animate) {
++  if (!workspace_observation_.IsObserving()) {
++    return;
++  }
++  const workspaces::Workspace* active =
++      workspace_observation_.GetSource()->GetActiveWorkspace();
++  const bool collapsed = active && active->pinned_collapsed;
++  if (collapsed != rows_collapsed_) {
++    rows_collapsed_ = collapsed;
++    if (!animate) {
++      rows_animation_.Reset(collapsed ? 0 : 1);
++    } else if (collapsed) {
++      rows_animation_.Hide();
++    } else {
++      rows_animation_.Show();
++    }
++  }
++  top_band_->SetState(rows_collapsed_, rows_animation_.GetCurrentValue(),
++                      GetHiddenRowCount());
++  InvalidateLayout();
++}
++
++int PinnedTabContainerView::GetHiddenRowCount() const {
++  if (!IsShowingWorkspaceRows()) {
++    return 0;
++  }
++  const auto* controller = workspace_observation_.GetSource();
++  int count = 0;
++  for (const auto& node : collection_node_->children()) {
++    if (layout_manager_->CanBeVisible(node->view()) &&
++        controller->IsWorkspacePinned(GetFirstTab(*node)) &&
++        !ContainsActiveTab(*node)) {
++      count++;
++    }
++  }
++  return count;
++}
++
++void PinnedTabContainerView::OnWorkspacesChanged() {
++  UpdateRowsCollapsed(/*animate=*/true);
++  for (views::View* child : children()) {
++    if (auto* tab_view = views::AsViewClass<TabView>(child)) {
++      tab_view->UpdatePinnedStyle();
++    } else if (auto* split_tab_view = views::AsViewClass<SplitTabView>(child)) {
++      split_tab_view->UpdatePinnedStyle();
++    }
++  }
++}
++
++void PinnedTabContainerView::OnActiveWorkspaceChanged() {
++  UpdateRowsCollapsed(/*animate=*/false);
++}
++
++void PinnedTabContainerView::AnimationProgressed(
++    const gfx::Animation* animation) {
++  if (animation != &rows_animation_) {
++    DraggedTabsContainer::AnimationProgressed(animation);
++    return;
++  }
++  top_band_->SetState(rows_collapsed_, rows_animation_.GetCurrentValue(),
++                      GetHiddenRowCount());
++  PreferredSizeChanged();
++}
++
++void PinnedTabContainerView::AnimationEnded(const gfx::Animation* animation) {
++  if (animation != &rows_animation_) {
++    DraggedTabsContainer::AnimationEnded(animation);
++    return;
++  }
++  AnimationProgressed(animation);
++  InvalidateLayout();
++}
++
+ void PinnedTabContainerView::OnCollapseStateChanged(
+     tabs::VerticalTabStripCollapseState state) {
+   // Collapsed state only exists for the vertical orientation.
+@@ -372,37 +674,50 @@ views::ProposedLayout PinnedTabContainerView::CalculateHorizontalLayout(
+ }
+ 
+ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+-    const views::SizeBounds& size_bounds) const {
++    const views::SizeBounds& size_bounds,
++    bool rows_collapsed) const {
+   views::ProposedLayout layouts;
+-  const auto children = collection_node_ ? collection_node_->GetDirectChildren()
+-                                         : TabCollectionNode::ChildViews();
++  const auto* controller =
++      IsShowingWorkspaceRows() ? workspace_observation_.GetSource() : nullptr;
++  std::vector<views::View*> tiles;
++  std::vector<views::View*> rows;
++  const views::View* active_row = nullptr;
++  if (collection_node_) {
++    for (const auto& node : collection_node_->children()) {
++      if (controller && controller->IsWorkspacePinned(GetFirstTab(*node))) {
++        rows.push_back(node->view());
++        if (ContainsActiveTab(*node)) {
++          active_row = node->view();
++        }
++      } else {
++        tiles.push_back(node->view());
++      }
++    }
++  }
+ 
+   int total_width = 0;
+   int total_height = 0;
  
    int x = 0;
    int y = 0;
 -  int children_on_row = children.size();
+-
+-  if (children_on_row == 0) {
+-    layouts.host_size = gfx::Size(0, 0);
+-    return layouts;
 +  int children_on_row = 0;
-+  for (const auto* child : children) {
++  for (const auto* child : tiles) {
 +    if (layout_manager_->CanBeVisible(child)) {
 +      children_on_row++;
 +    }
-+  }
- 
-   if (children_on_row == 0) {
-+    for (auto* child : children) {
-+      layouts.child_layouts.emplace_back(child, false, gfx::Rect());
-+    }
-     layouts.host_size = gfx::Size(0, 0);
-     return layouts;
    }
-@@ -431,7 +444,8 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+ 
+   // Child width will be uniform and match the largest child's width.
+-  bool contains_split = false;
+-  for (const auto& i : collection_node_->children()) {
+-    if (i->type() == TabCollectionNode::Type::SPLIT) {
+-      contains_split = true;
+-    }
+-  }
++  const bool contains_split = std::ranges::any_of(
++      tiles, [](views::View* tile) { return views::IsViewClass<SplitTabView>(tile); });
+   int child_width = GetLayoutConstant(LayoutConstant::kVerticalTabMinWidth) *
+                     (contains_split ? 2 : 1);
+ 
+   // If the width is bounded, calculate how many children can fit on a row.
+   // Since all children are allocated the same width this will be the same for
+   // every row.
+-  if (size_bounds.width().is_bounded() && size_bounds.width().value() > 0) {
++  if (children_on_row > 0 && size_bounds.width().is_bounded() &&
++      size_bounds.width().value() > 0) {
+     // Apply horizontal padding immediately at start of collapse animation by
+     // including collapsing state.
+     int available_width =
+@@ -425,13 +740,14 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+   }
+ 
+   int row_index = 0;
+-  for (auto* child : children) {
++  for (auto* child : tiles) {
+     gfx::Rect bounds =
+         gfx::Rect(child->GetPreferredSize(views::SizeBounds(child_width, {})));
      bounds.set_width(child_width);
  
      auto drag_data = GetVisualDataForDraggedView(*child);
@@ -151,19 +584,255 @@ index e2d93808d..0535cea4e 100644
      if (!should_show_child) {
        layouts.child_layouts.emplace_back(child, false, gfx::Rect());
        continue;
+@@ -467,13 +783,101 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+     layouts.child_layouts.emplace_back(child, true, bounds);
+   }
+ 
++  // Workspace pinned tabs are full width rows below the workspace header.
++  const int horizontal_padding =
++      GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
++  const int row_width =
++      size_bounds.width().is_bounded()
++          ? std::max(0, size_bounds.width().value() - horizontal_padding)
++          : std::max(total_width,
++                     GetLayoutConstant(LayoutConstant::kVerticalTabMinWidth));
++  if (controller) {
++    total_width = std::max(total_width, row_width);
++  }
++
++  if (workspace_header_) {
++    if (controller && layout_manager_->CanBeVisible(workspace_header_)) {
++      const gfx::Rect bounds(
++          0, total_height + (total_height > 0 ? kTabPadding : 0), row_width,
++          workspace_header_->GetHeightForWidth(row_width));
++      layouts.child_layouts.emplace_back(workspace_header_.get(), true, bounds);
++      total_height = bounds.bottom();
++    } else {
++      layouts.child_layouts.emplace_back(workspace_header_.get(), false,
++                                         gfx::Rect(0, total_height, row_width, 0));
++    }
++  }
++
++  const bool show_bands = std::ranges::any_of(rows, [this](views::View* row) {
++    return layout_manager_->CanBeVisible(row);
++  });
++  int rows_top = total_height;
++  if (top_band_) {
++    const gfx::Rect bounds(0, total_height + kRowPadding, row_width,
++                           kTopBandHeight);
++    layouts.child_layouts.emplace_back(top_band_.get(), show_bands, bounds);
++    if (show_bands) {
++      rows_top = bounds.bottom();
++    }
++  }
++
++  const bool collapse = rows_collapsed && !IsDragging();
++  int expanded_bottom = rows_top;
++  int collapsed_bottom = rows_top;
++  for (auto* row : rows) {
++    gfx::Rect bounds(
++        0, expanded_bottom + kRowPadding, row_width,
++        row->GetPreferredSize(views::SizeBounds(row_width, {})).height());
++    auto drag_data = GetVisualDataForDraggedView(*row);
++    if (!layout_manager_->CanBeVisible(row) ||
++        (drag_data && drag_data->should_hide)) {
++      layouts.child_layouts.emplace_back(row, false, bounds);
++      continue;
++    }
++
++    if (drag_data) {
++      int row_x = drag_data->offset.x();
++      if (base::i18n::IsRTL() && size_bounds.width().is_bounded()) {
++        row_x = size_bounds.width().value() - row_x - row_width;
++      }
++      bounds.set_origin(gfx::Point(row_x, drag_data->offset.y()));
++    }
++    if (!drag_data || !drag_data->should_float) {
++      expanded_bottom = bounds.bottom();
++    }
++
++    bool visible = true;
++    if (collapse) {
++      if (row == active_row) {
++        bounds.set_y(rows_top + kRowPadding);
++        collapsed_bottom = bounds.bottom();
++      } else {
++        // Hidden rows stay in place while the container height shrinks over
++        // them.
++        visible = rows_animation_.is_animating();
++      }
++    }
++    layouts.child_layouts.emplace_back(row, visible, bounds);
++  }
++
++  if (bottom_band_) {
++    const gfx::Rect bounds(0, collapse ? collapsed_bottom : expanded_bottom,
++                           row_width, kBottomBandHeight);
++    layouts.child_layouts.emplace_back(bottom_band_.get(), show_bands, bounds);
++    if (show_bands) {
++      total_height = bounds.bottom();
++    }
++  }
++
+   // Make sure we snap to bounded width if defined. This is necessary as the
+   // `child_width` calculation above rounds width down and this can result in
+   // off-by-one width calculations when the number of children on a row changes.
+   // Changes in host width can be interpreted as a resize and animations may
+   // otherwise snap to target.
+   layouts.host_size =
+-      gfx::Size(size_bounds.width().value_or(total_width), total_height);
++      total_height > 0
++          ? gfx::Size(size_bounds.width().value_or(total_width), total_height)
++          : gfx::Size();
+   return layouts;
+ }
+ 
+diff --git a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
+index 0c0aa68e4..3e5800512 100644
+--- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
++++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
+@@ -6,24 +6,31 @@
+ #define CHROME_BROWSER_UI_VIEWS_TABS_COMMON_PINNED_TAB_CONTAINER_VIEW_H_
+ 
+ #include "base/callback_list.h"
++#include "base/scoped_observation.h"
+ #include "chrome/browser/ui/views/frame/browser_root_view.h"
+ #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
+ #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
+ #include "chrome/browser/ui/views/tabs/common/tab_collection_z_order_manager.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/gfx/animation/slide_animation.h"
+ #include "ui/views/layout/delegating_layout_manager.h"
+ #include "ui/views/view.h"
+ 
++class PinnedTabsBandView;
+ class TabCollectionNode;
+ 
+ // The view class that represents the pinned tab region for the
+ // tab strip. It manages the layout of all the pinned tabs and serves
+-// as the drag target for pinned tabs.
++// as the drag target for pinned tabs. While workspaces filter the vertical tab
++// strip, Essentials are tiles followed by the workspace header and the pinned
++// tabs of the active workspace as collapsible rows between two bands.
+ class PinnedTabContainerView
+     : public TabCollectionZOrderManager,
+       public views::LayoutDelegate,
+       public DraggedTabsContainer,
+-      public TabCollectionAnimatingLayoutManager::Delegate {
++      public TabCollectionAnimatingLayoutManager::Delegate,
++      public workspaces::WorkspaceController::Observer {
+   METADATA_HEADER(PinnedTabContainerView, TabCollectionZOrderManager)
+ 
+  public:
+@@ -38,6 +45,8 @@ class PinnedTabContainerView
+ 
+   // views::View:
+   gfx::Size GetMinimumSize() const override;
++  gfx::Size CalculatePreferredSize(
++      const views::SizeBounds& available_size) const override;
+ 
+   // TabCollectionAnimatingLayoutManager::Delegate:
+   bool IsDragging() const override;
+@@ -61,7 +70,24 @@ class PinnedTabContainerView
+   views::ProposedLayout CalculateHorizontalLayout(
+       const views::SizeBounds& size_bounds) const;
+   views::ProposedLayout CalculateVerticalLayout(
+-      const views::SizeBounds& size_bounds) const;
++      const views::SizeBounds& size_bounds,
++      bool rows_collapsed) const;
++
++  bool IsShowingWorkspaceRows() const;
++  // Returns `height` replaced by the animated height of the pinned rows while
++  // they collapse or expand.
++  int GetAnimatedHeight(const views::SizeBounds& size_bounds, int height) const;
++  void ToggleRowsCollapsed();
++  void UpdateRowsCollapsed(bool animate);
++  int GetHiddenRowCount() const;
++
++  // workspaces::WorkspaceController::Observer:
++  void OnWorkspacesChanged() override;
++  void OnActiveWorkspaceChanged() override;
++
++  // DraggedTabsContainer:
++  void AnimationProgressed(const gfx::Animation* animation) override;
++  void AnimationEnded(const gfx::Animation* animation) override;
+ 
+   // While in horizontal orientation, the x-coordinate of the single row is
+   // used to determine the drop index.
+@@ -83,6 +109,16 @@ class PinnedTabContainerView
+   raw_ptr<TabCollectionNode> collection_node_;
+   const raw_ref<TabCollectionAnimatingLayoutManager> layout_manager_;
+ 
++  raw_ptr<views::View> workspace_header_ = nullptr;
++  raw_ptr<PinnedTabsBandView> top_band_ = nullptr;
++  raw_ptr<PinnedTabsBandView> bottom_band_ = nullptr;
++  bool rows_collapsed_ = false;
++  // 1 while the workspace pinned rows are expanded, 0 while collapsed.
++  gfx::SlideAnimation rows_animation_{this};
++  base::ScopedObservation<workspaces::WorkspaceController,
++                          workspaces::WorkspaceController::Observer>
++      workspace_observation_{this};
++
+   base::CallbackListSubscription node_destroyed_subscription_;
+   base::CallbackListSubscription collapsed_state_changed_subscription_;
+ };
+diff --git a/chrome/browser/ui/views/tabs/common/split_tab_view.cc b/chrome/browser/ui/views/tabs/common/split_tab_view.cc
+index a0df4945d..966b89859 100644
+--- a/chrome/browser/ui/views/tabs/common/split_tab_view.cc
++++ b/chrome/browser/ui/views/tabs/common/split_tab_view.cc
+@@ -16,6 +16,7 @@
+ #include "chrome/browser/ui/views/tabs/common/tab_view.h"
+ #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+ #include "chrome/browser/ui/views/tabs/tab/glow_hover_controller.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
+ #include "components/tabs/public/tab_collection.h"
+ #include "components/tabs/public/tab_collection_types.h"
+ #include "components/tabs/public/tab_interface.h"
+@@ -195,11 +196,22 @@ void SplitTabView::OnDataChanged() {
+           collection_node_->GetNodeData());
+   const std::vector<tabs::TabInterface*> tabs =
+       tab_collection->GetTabsRecursive();
+-  pinned_ = tabs[0]->IsPinned();
++  pinned_ = workspaces::IsPinnedTile(tabs[0]);
+ 
+   UpdateBorder();
+ }
+ 
++void SplitTabView::UpdatePinnedStyle() {
++  if (!collection_node_) {
++    return;
++  }
++  const bool pinned = pinned_;
++  OnDataChanged();
++  if (pinned_ != pinned) {
++    InvalidateLayout();
++  }
++}
++
+ void SplitTabView::UpdateBorder() {
+   if (pinned_) {
+     const bool is_frame_active =
+diff --git a/chrome/browser/ui/views/tabs/common/split_tab_view.h b/chrome/browser/ui/views/tabs/common/split_tab_view.h
+index 9bf90c27d..96e7f76e4 100644
+--- a/chrome/browser/ui/views/tabs/common/split_tab_view.h
++++ b/chrome/browser/ui/views/tabs/common/split_tab_view.h
+@@ -62,6 +62,10 @@ class SplitTabView : public TabCollectionZOrderManager,
+ 
+   const TabCollectionNode* collection_node() const { return collection_node_; }
+ 
++  // Re-evaluates the pinned tile styling, which workspaces drop for pinned
++  // tabs of a workspace.
++  void UpdatePinnedStyle();
++
+  private:
+   void ResetCollectionNode();
+   void OnDataChanged();
 diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
-index e48e2d5bd..dea61895d 100644
+index e48e2d5bd..16323502d 100644
 --- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
-@@ -30,6 +30,7 @@
- #include "chrome/browser/ui/views/tabs/horizontal/tab_scroll_button_container.h"
- #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
- #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_scroll_bar.h"
-+#include "chrome/browser/ui/views/workspaces/workspace_switcher_view.h"
- #include "chrome/common/pref_names.h"
- #include "components/prefs/pref_service.h"
- #include "components/tabs/public/tab_collection_types.h"
-@@ -228,6 +229,16 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
+@@ -228,6 +228,14 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
      }
    }
  
@@ -172,15 +841,13 @@ index e48e2d5bd..dea61895d 100644
 +        collection_node_->GetController()->GetBrowserView()->browser();
 +    if (auto* controller = workspaces::WorkspaceController::From(browser)) {
 +      workspace_observation_.Observe(controller);
-+      workspace_header_ =
-+          AddChildView(workspaces::CreateWorkspaceHeaderView(browser));
 +    }
 +  }
 +
    SetNotifyEnterExitOnChild(true);
    UpdateColors();
  }
-@@ -239,6 +250,7 @@ TabStripView::~TabStripView() {
+@@ -239,6 +247,7 @@ TabStripView::~TabStripView() {
  }
  
  void TabStripView::AddedToWidget() {
@@ -188,7 +855,7 @@ index e48e2d5bd..dea61895d 100644
    views::Widget* const widget = GetWidget();
    paint_as_active_subscription_ = widget->RegisterPaintAsActiveChangedCallback(
        base::BindRepeating(&TabStripView::UpdateColors, base::Unretained(this)));
-@@ -327,6 +339,7 @@ void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
+@@ -327,6 +336,7 @@ void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
  }
  
  void TabStripView::OnTabChanged(const tabs::TabInterface* active_tab) {
@@ -196,7 +863,7 @@ index e48e2d5bd..dea61895d 100644
    if (!collection_node_ || !active_tab) {
      return;
    }
-@@ -611,6 +624,7 @@ void TabStripView::SetScrollViewProperties(views::ScrollView* scroll_view) {
+@@ -611,6 +621,7 @@ void TabStripView::SetScrollViewProperties(views::ScrollView* scroll_view) {
  }
  
  void TabStripView::ResetCollectionNode() {
@@ -204,7 +871,7 @@ index e48e2d5bd..dea61895d 100644
    collection_node_ = nullptr;
    if (tab_scroll_button_container_) {
      tab_scroll_button_container_->SetScrollView(nullptr);
-@@ -798,6 +812,43 @@ gfx::Rect TabStripView::GetBoundsInScrollViewContents(
+@@ -798,6 +809,43 @@ gfx::Rect TabStripView::GetBoundsInScrollViewContents(
    return bounds;
  }
  
@@ -249,7 +916,7 @@ index e48e2d5bd..dea61895d 100644
  
  bool TabStripView::IsFrameActive() const {
 diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.h b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
-index 1767160a0..0a9adc1df 100644
+index 1767160a0..6680ca19b 100644
 --- a/chrome/browser/ui/views/tabs/common/tab_strip_view.h
 +++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
 @@ -7,6 +7,7 @@
@@ -270,15 +937,7 @@ index 1767160a0..0a9adc1df 100644
    METADATA_HEADER(TabStripView, views::View)
  
   public:
-@@ -56,6 +58,7 @@ class TabStripView final : public views::View,
-   views::ScrollView* unpinned_tabs_scroll_view() const {
-     return unpinned_tabs_scroll_view_;
-   }
-+  views::View* workspace_header() const { return workspace_header_; }
- 
-   void SetCollapsedState(bool is_collapsed);
-   void SetIsAnimatingSize(bool is_animating);
-@@ -73,6 +76,8 @@ class TabStripView final : public views::View,
+@@ -73,6 +75,8 @@ class TabStripView final : public views::View,
  
    void OnChildMoved(TabCollectionNode* moved_node);
    void OnTabChanged(const tabs::TabInterface* active_tab);
@@ -287,7 +946,7 @@ index 1767160a0..0a9adc1df 100644
  
    // Scrolls the scroll view(s) to ensure that the specified target tabs/views
    // are visible within the viewport.
-@@ -130,6 +135,7 @@ class TabStripView final : public views::View,
+@@ -130,6 +134,7 @@ class TabStripView final : public views::View,
                                            views::ScrollView* scroll_view);
  
    void UpdateColors();
@@ -295,15 +954,7 @@ index 1767160a0..0a9adc1df 100644
  
    bool IsFrameActive() const;
  
-@@ -149,6 +155,7 @@ class TabStripView final : public views::View,
-   raw_ptr<PinnedTabContainerView> pinned_tabs_container_view_ = nullptr;
-   raw_ptr<views::Separator> tabs_separator_ = nullptr;
-   raw_ptr<views::ScrollView> unpinned_tabs_scroll_view_ = nullptr;
-+  raw_ptr<views::View> workspace_header_ = nullptr;
-   raw_ptr<UnpinnedTabContainerView> unpinned_tabs_container_view_ = nullptr;
-   raw_ptr<TabScrollButtonContainer> tab_scroll_button_container_ = nullptr;
-   bool is_collapsed_ = false;
-@@ -171,6 +178,10 @@ class TabStripView final : public views::View,
+@@ -171,6 +176,10 @@ class TabStripView final : public views::View,
    base::CallbackListSubscription paint_as_active_subscription_;
    std::vector<base::CallbackListSubscription> callback_subscriptions_;
  
@@ -314,34 +965,55 @@ index 1767160a0..0a9adc1df 100644
    base::ScopedObservation<views::Widget, views::WidgetObserver>
        widget_observation_{this};
  };
-diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
-index 734df66fd..4086cf1be 100644
---- a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
-+++ b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
-@@ -277,6 +277,23 @@ views::ProposedLayout TabStripViewLayout::CalculateVerticalLayout(
-     }
-   }
+diff --git a/chrome/browser/ui/views/tabs/common/tab_view.cc b/chrome/browser/ui/views/tabs/common/tab_view.cc
+index cb16b620a..98d9b9b52 100644
+--- a/chrome/browser/ui/views/tabs/common/tab_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_view.cc
+@@ -56,6 +56,7 @@
+ #include "chrome/browser/ui/views/tabs/tab/tab_title.h"
+ #include "chrome/browser/ui/views/tabs/tab_style_views.h"
+ #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
+ #include "chrome/common/buildflags.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "chrome/grit/theme_resources.h"
+@@ -1083,7 +1084,7 @@ void TabView::OnTabStateChanged() {
  
-+  if (views::View* header = tab_strip_view->workspace_header()) {
-+    const bool visible = header->GetVisible();
-+    const int header_height =
-+        visible ? header->GetPreferredSize(size_bounds).height() : 0;
-+    layouts.child_layouts.emplace_back(
-+        header, visible,
-+        gfx::Rect(region_horizontal_padding, y,
-+                  std::max(0, size_bounds.width().value() -
-+                                  2 * region_horizontal_padding),
-+                  header_height));
-+    if (visible) {
-+      y += header_height + region_vertical_padding;
-+      remaining_height = std::max(
-+          0, remaining_height - header_height - region_vertical_padding);
-+    }
+   active_ = tab_strip_model->IsTabInForeground(index);
+   split_ = tab->IsSplit();
+-  pinned_ = tab->IsPinned();
++  pinned_ = workspaces::IsPinnedTile(tab);
+ 
+   SetSelection(tab->IsSelected());
+   UpdateTabData(tab_data_observer_->tab_data());
+@@ -1095,6 +1096,13 @@ void TabView::OnTabStateChanged() {
+   InvalidateLayout();
+ }
+ 
++void TabView::UpdatePinnedStyle() {
++  auto* tab = const_cast<tabs::TabInterface*>(GetTabInterface());
++  if (tab && workspaces::IsPinnedTile(tab) != pinned_) {
++    OnTabStateChanged();
 +  }
++}
 +
-   // Place the unpinned container using the entire available width, we do not
-   // inset the x value by `region_horizontal_padding` here because, when the tab
-   // strip is collapsed, tab groups need to draw the group colored line in this
+ void TabView::UpdateZOrder() {
+   using ZOrderLevel = TabCollectionZOrderManager::ZOrderLevel;
+   ZOrderLevel target_z = ZOrderLevel::kDefault;
+diff --git a/chrome/browser/ui/views/tabs/common/tab_view.h b/chrome/browser/ui/views/tabs/common/tab_view.h
+index 7e7c326cd..d76c6a0eb 100644
+--- a/chrome/browser/ui/views/tabs/common/tab_view.h
++++ b/chrome/browser/ui/views/tabs/common/tab_view.h
+@@ -108,6 +108,9 @@ class TabView : public views::View,
+   bool split() const { return split_; }
+   bool pinned() const { return pinned_; }
+   const tabs::TabInterface* GetTabInterface() const;
++  // Re-evaluates the pinned tile styling, which workspaces drop for pinned
++  // tabs of a workspace.
++  void UpdatePinnedStyle();
+ 
+   GlowHoverController* GetHoverControllerForTesting() {
+     return hover_controller_.get();
 diff --git a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
 index 5dd9f7ef1..f45e8fc20 100644
 --- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
@@ -355,6 +1027,39 @@ index 5dd9f7ef1..f45e8fc20 100644
      if (focused_group_id.has_value()) {
        std::optional<tab_groups::TabGroupId> group_id =
            GetGroupIdForChild(child);
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc b/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
+index 720425beb..424daeb0b 100644
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
+@@ -4,11 +4,14 @@
+ 
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.h"
+ 
++#include "base/time/time.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
++#include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "ui/base/l10n/l10n_util.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/views/animation/ink_drop.h"
+ 
+ namespace {
+ 
+@@ -24,7 +27,12 @@ VerticalNewTabButton::VerticalNewTabButton(BrowserWindowInterface* browser)
+           GetLayoutConstant(LayoutConstant::kVerticalTabStripNewTabButtonSize),
+           kIconSize) {
+   SetCornerRadius(GetLayoutConstant(LayoutConstant::kVerticalTabCornerRadius));
+-  SetForegroundColorId(kColorToolbarButtonIconDisabled);
++  SetForegroundColorId(kColorToolbarButtonIcon);
++  ConfigureToolbarInkdropForRefresh2023(
++      this, kColorTabStripControlButtonInkDrop,
++      kColorTabStripControlButtonInkDropRipple);
++  views::InkDrop::Get(this)->GetInkDrop()->SetHoverHighlightFadeDuration(
++      base::Milliseconds(180));
+   SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
+   SetLabelInsets(gfx::Insets::VH(kBasePadding, kBigPadding),
+                  gfx::Insets::VH(kBasePadding, kBigPadding));
 diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
 index 01be335c0..fe59a2f23 100644
 --- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
@@ -421,7 +1126,7 @@ index fe76a1b5d..7210c8225 100644
  
 diff --git a/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
 new file mode 100644
-index 000000000..558dd366f
+index 000000000..e31bc1792
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
 @@ -0,0 +1,782 @@
@@ -1237,40 +1942,9 @@ index 000000000..1f9cf1cc8
 +}  // namespace workspaces
 +
 +#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_SWITCHER_VIEW_H_
-diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc b/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
---- a/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
-+++ b/chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.cc
-@@ -4,11 +4,14 @@
- 
- #include "chrome/browser/ui/views/tabs/vertical/vertical_new_tab_button.h"
- 
-+#include "base/time/time.h"
- #include "chrome/browser/ui/color/chrome_color_id.h"
- #include "chrome/browser/ui/layout_constants.h"
-+#include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
- #include "chrome/grit/generated_resources.h"
- #include "ui/base/l10n/l10n_util.h"
- #include "ui/base/metadata/metadata_impl_macros.h"
-+#include "ui/views/animation/ink_drop.h"
- 
- namespace {
- 
-@@ -24,7 +27,12 @@
-           GetLayoutConstant(LayoutConstant::kVerticalTabStripNewTabButtonSize),
-           kIconSize) {
-   SetCornerRadius(GetLayoutConstant(LayoutConstant::kVerticalTabCornerRadius));
--  SetForegroundColorId(kColorToolbarButtonIconDisabled);
-+  SetForegroundColorId(kColorToolbarButtonIcon);
-+  ConfigureToolbarInkdropForRefresh2023(
-+      this, kColorTabStripControlButtonInkDrop,
-+      kColorTabStripControlButtonInkDropRipple);
-+  views::InkDrop::Get(this)->GetInkDrop()->SetHoverHighlightFadeDuration(
-+      base::Milliseconds(180));
-   SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
-   SetLabelInsets(gfx::Insets::VH(kBasePadding, kBigPadding),
-                  gfx::Insets::VH(kBasePadding, kBigPadding));
 diff --git a/chrome/browser/ui/views/workspaces/workspace_vector_icons.h b/chrome/browser/ui/views/workspaces/workspace_vector_icons.h
 new file mode 100644
+index 000000000..5448bb06e
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_vector_icons.h
 @@ -0,0 +1,1565 @@
@@ -2839,15 +3513,3 @@ new file mode 100644
 +}  // namespace workspaces
 +
 +#endif
-diff --git a/chrome/browser/ui/views/side_panel/side_panel.cc b/chrome/browser/ui/views/side_panel/side_panel.cc
-index 25dd2d748..33129843b 100644
---- a/chrome/browser/ui/views/side_panel/side_panel.cc
-+++ b/chrome/browser/ui/views/side_panel/side_panel.cc
-@@ -744,6 +744,7 @@ void SidePanel::UpdateVisibility(bool should_be_open, bool animate_transition) {
-     animation_controller->Clear(kAnimationGroup);
-     SetVisible(should_be_open);
-   }
-+  browser_view_->OnSidePanelVisibilityChanged();
- }
- 
- double SidePanel::GetAnimationValueFor(BrowserAnimationSequence which) const {
