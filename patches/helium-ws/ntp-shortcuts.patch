@@ -39,6 +39,219 @@ index 7a52493fe..6c4ac4820 100644
            max-tiles-in-collapsed-state="${this.maxTilesInCollapsedState_}"
            max-shortcuts-in-expanded-state="${this.maxShortcutsInExpandedState_}"
            max-most-visited-tiles-in-expanded-state="${this.maxMostVisitedTilesInExpandedState_}"
+diff --git a/components/ntp_tiles/BUILD.gn b/components/ntp_tiles/BUILD.gn
+index 9aa7822fe..7a5b4da10 100644
+--- a/components/ntp_tiles/BUILD.gn
++++ b/components/ntp_tiles/BUILD.gn
+@@ -64,6 +64,7 @@ static_library("ntp_tiles") {
+     "//base",
+     "//components/history/core/browser",
+     "//components/ntp_tiles/webui/resources",
++    "//net",
+   ]
+   deps = [
+     ":mojo_bindings",
+diff --git a/components/ntp_tiles/custom_links_manager_impl.cc b/components/ntp_tiles/custom_links_manager_impl.cc
+index 1a5ffdeb3..0b18b77c7 100644
+--- a/components/ntp_tiles/custom_links_manager_impl.cc
++++ b/components/ntp_tiles/custom_links_manager_impl.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <memory>
++#include <set>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -24,6 +25,25 @@
+ 
+ namespace ntp_tiles {
+ 
++namespace {
++
++void RemoveDuplicateSites(std::vector<CustomLinksManager::Link>& links) {
++  std::set<std::string> custom_sites;
++  for (const auto& link : links) {
++    if (!link.is_most_visited) {
++      custom_sites.insert(custom_links_util::GetSiteKey(link.url));
++    }
++  }
++  std::set<std::string> seen_sites;
++  std::erase_if(links, [&](const auto& link) {
++    const std::string site = custom_links_util::GetSiteKey(link.url);
++    return (link.is_most_visited && custom_sites.contains(site)) ||
++           !seen_sites.insert(site).second;
++  });
++}
++
++}
++
+ CustomLinksManagerImpl::CustomLinksManagerImpl(const Options& options)
+     : prefs_(options.prefs),
+       max_links_(
+@@ -37,6 +57,7 @@ CustomLinksManagerImpl::CustomLinksManagerImpl(const Options& options)
+   }
+   if (IsInitialized()) {
+     current_links_ = store_.RetrieveLinks();
++    StoreLinks();
+     RemoveCustomLinksForPreinstalledApps();
+   }
+ 
+@@ -96,8 +117,10 @@ bool CustomLinksManagerImpl::AddLinkTo(const GURL& url,
+     return false;
+   }
+ 
+-  if (custom_links_util::FindLinkWithUrl<Link>(current_links_, url) !=
+-      current_links_.end()) {
++  const std::string site = custom_links_util::GetSiteKey(url);
++  if (std::ranges::any_of(current_links_, [&](const Link& link) {
++        return custom_links_util::GetSiteKey(link.url) == site;
++      })) {
+     return false;
+   }
+ 
+@@ -122,11 +145,14 @@ bool CustomLinksManagerImpl::UpdateLink(const GURL& url,
+     return false;
+   }
+ 
++  const std::string new_site = custom_links_util::GetSiteKey(new_url);
+   // Do not update if |new_url| is invalid or already exists in the list.
+   if (!new_url.is_empty() &&
+       (!new_url.is_valid() ||
+-       custom_links_util::FindLinkWithUrl<Link>(current_links_, new_url) !=
+-           current_links_.end())) {
++       std::ranges::any_of(current_links_, [&](const Link& link) {
++         return link.url != url &&
++                custom_links_util::GetSiteKey(link.url) == new_site;
++       }))) {
+     return false;
+   }
+ 
+@@ -160,6 +186,7 @@ bool CustomLinksManagerImpl::ReorderLink(const GURL& url, size_t new_pos) {
+     return false;
+   }
+ 
++  current_links_[new_pos].is_most_visited = false;
+   StoreLinks();
+   return true;
+ }
+@@ -204,6 +231,7 @@ void CustomLinksManagerImpl::ClearLinks() {
+ 
+ void CustomLinksManagerImpl::StoreLinks() {
+   base::AutoReset<bool> auto_reset(&updating_preferences_, true);
++  RemoveDuplicateSites(current_links_);
+   store_.StoreLinks(current_links_);
+ }
+ 
+@@ -274,6 +302,7 @@ void CustomLinksManagerImpl::OnPreferenceChanged() {
+ 
+   if (IsInitialized()) {
+     current_links_ = store_.RetrieveLinks();
++    StoreLinks();
+   } else {
+     current_links_.clear();
+   }
+diff --git a/components/ntp_tiles/custom_links_util.h b/components/ntp_tiles/custom_links_util.h
+index 1486053fd..8a1a356a5 100644
+--- a/components/ntp_tiles/custom_links_util.h
++++ b/components/ntp_tiles/custom_links_util.h
+@@ -6,12 +6,29 @@
+ #define COMPONENTS_NTP_TILES_CUSTOM_LINKS_UTIL_H_
+ 
+ #include <algorithm>
++#include <string>
+ #include <vector>
+ 
++#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+ #include "url/gurl.h"
+ 
+ namespace ntp_tiles::custom_links_util {
+ 
++inline std::string GetSiteKey(const GURL& url) {
++  if (!url.SchemeIsHTTPOrHTTPS()) {
++    return url.spec();
++  }
++  std::string host = net::registry_controlled_domains::GetDomainAndRegistry(
++      url, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
++  if (host.empty()) {
++    host = url.host();
++  }
++  if (host.ends_with('.')) {
++    host.pop_back();
++  }
++  return host;
++}
++
+ // Moves the specified link from its current index and inserts it at
+ // |new_pos|. Returns false and does nothing if |url| is invalid, |url| does not
+ // exist in the list, or |new_pos| is invalid/already the current index.
+diff --git a/components/ntp_tiles/most_visited_sites.cc b/components/ntp_tiles/most_visited_sites.cc
+index f9e10a279..84f5b3ab2 100644
+--- a/components/ntp_tiles/most_visited_sites.cc
++++ b/components/ntp_tiles/most_visited_sites.cc
+@@ -23,6 +23,7 @@
+ #include "base/strings/utf_string_conversions.h"
+ #include "build/build_config.h"
+ #include "components/ntp_tiles/constants.h"
++#include "components/ntp_tiles/custom_links_util.h"
+ #include "components/ntp_tiles/features.h"
+ #include "components/ntp_tiles/icon_cacher.h"
+ #include "components/ntp_tiles/metrics.h"
+@@ -583,9 +584,11 @@ void MostVisitedSites::OnMostVisitedURLsAvailable(
+   }
+ 
+   NTPTilesVector tiles;
+-  size_t num_tiles = std::min(visited_list.size(), GetMaxNumSites());
+-  for (size_t i = 0; i < num_tiles; ++i) {
+-    const history::MostVisitedURL& visited = visited_list[i];
++  std::set<std::string> seen_sites;
++  for (const history::MostVisitedURL& visited : visited_list) {
++    if (tiles.size() >= GetMaxNumSites()) {
++      break;
++    }
+     if (visited.url.is_empty()) {
+       break;  // This is the signal that there are no more real visited sites.
+     }
+@@ -598,6 +601,10 @@ void MostVisitedSites::OnMostVisitedURLsAvailable(
+     }
+ #endif
+ 
++    if (!seen_sites.insert(custom_links_util::GetSiteKey(visited.url)).second) {
++      continue;
++    }
++
+     NTPTile tile;
+     tile.title = custom_links_manager_ ? GenerateShortTitle(visited.title)
+                                        : visited.title;
+@@ -919,9 +926,15 @@ NTPTilesVector MostVisitedSites::ImposeCustomLinks(NTPTilesVector tiles) {
+   }
+   if (out_tiles.size() < num_tiles) {
+     // Exclude |tiles| elements with |url| found in |custom_links_cache_|.
++    std::set<std::string> seen_sites;
++    for (const auto& tile : out_tiles) {
++      seen_sites.insert(custom_links_util::GetSiteKey(tile.url));
++    }
+     std::copy_if(tiles.begin(), tiles.end(), std::back_inserter(out_tiles),
+                  [&](const NTPTile& tile) -> bool {
+-                   return !custom_links_cache_.HasUrl(tile.url);
++                   return seen_sites
++                       .insert(custom_links_util::GetSiteKey(tile.url))
++                       .second;
+                  });
+     // Note that |out_tiles| truncation only happens under the "if" clause.
+     // So if |out_tiles| started with more than GetMaxNumSites() custom links,
+@@ -963,6 +976,11 @@ void MostVisitedSites::SaveTilesAndNotify(
+   fixed_tiles = ImposeCustomLinks(std::move(fixed_tiles));
+   fixed_tiles = ImposeEnterpriseShortcuts(std::move(fixed_tiles));
+ 
++  std::set<std::string> seen_sites;
++  std::erase_if(fixed_tiles, [&](const NTPTile& tile) {
++    return !seen_sites.insert(custom_links_util::GetSiteKey(tile.url)).second;
++  });
++
+   if (!current_tiles_.has_value() || (*current_tiles_ != fixed_tiles)) {
+     current_tiles_.emplace(std::move(fixed_tiles));
+ 
 diff --git a/ui/webui/resources/cr_components/most_visited/most_visited.css b/ui/webui/resources/cr_components/most_visited/most_visited.css
 index 8c83e8763..9867998b1 100644
 --- a/ui/webui/resources/cr_components/most_visited/most_visited.css
