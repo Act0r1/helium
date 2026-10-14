@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
-index 19bf2971d..ad3cffb7f 100644
+index 19bf2971d..bd17d075f 100644
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
 @@ -2045,6 +2045,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
@@ -63,7 +63,25 @@ index 19bf2971d..ad3cffb7f 100644
  bool BrowserView::IsPointInZenTopChromeBounds(const gfx::Point& point) const {
    if (!top_container_ || !top_container_->parent()) {
      return false;
-@@ -6868,6 +6915,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
+@@ -4846,9 +4893,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
+     }
+   }
+ 
+-  // Collapse zen mode chrome when the window is deactivated.
++  // Collapse zen mode chrome when the window is deactivated. Deferred because
++  // on Wayland a bubble takes activation inside its own Widget::Show(),
++  // before it is visible, and would not yet keep the top chrome revealed.
+   if (!active && zen_mode_enabled_) {
+-    UpdateZenModeReveal(/*reveal_top=*/false, /*reveal_side=*/false);
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&BrowserView::UpdateZenModeReveal,
++                       weak_ptr_factory_.GetWeakPtr(), /*reveal_top=*/false,
++                       /*reveal_side=*/false));
+   }
+ 
+   ExtensionKeybindingRegistryViews::From(browser_)->OnHostActivationChanged(
+@@ -6868,6 +6921,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
  
  void BrowserView::AnimationEnded(const gfx::Animation* animation) {
    AnimationProgressed(animation);
@@ -688,7 +706,7 @@ index e2d93808d..0ad9b13fd 100644
  }
  
 diff --git a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
-index 0c0aa68e4..3e5800512 100644
+index 0c0aa68e4..7fbe21b13 100644
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
 @@ -6,24 +6,31 @@
@@ -760,10 +778,11 @@ index 0c0aa68e4..3e5800512 100644
  
    // While in horizontal orientation, the x-coordinate of the single row is
    // used to determine the drop index.
-@@ -83,6 +109,16 @@ class PinnedTabContainerView
-   raw_ptr<TabCollectionNode> collection_node_;
-   const raw_ref<TabCollectionAnimatingLayoutManager> layout_manager_;
+@@ -80,6 +106,17 @@ class PinnedTabContainerView
+   void ResetCollectionNode();
+   void OnCollapseStateChanged(tabs::VerticalTabStripCollapseState state);
  
++  // Declared before `layout_manager_`, which lays out while it is created.
 +  raw_ptr<views::View> workspace_header_ = nullptr;
 +  raw_ptr<PinnedTabsBandView> top_band_ = nullptr;
 +  raw_ptr<PinnedTabsBandView> bottom_band_ = nullptr;
@@ -774,9 +793,9 @@ index 0c0aa68e4..3e5800512 100644
 +                          workspaces::WorkspaceController::Observer>
 +      workspace_observation_{this};
 +
-   base::CallbackListSubscription node_destroyed_subscription_;
-   base::CallbackListSubscription collapsed_state_changed_subscription_;
- };
+   raw_ptr<TabCollectionNode> collection_node_;
+   const raw_ref<TabCollectionAnimatingLayoutManager> layout_manager_;
+ 
 diff --git a/chrome/browser/ui/views/tabs/common/split_tab_view.cc b/chrome/browser/ui/views/tabs/common/split_tab_view.cc
 index a0df4945d..966b89859 100644
 --- a/chrome/browser/ui/views/tabs/common/split_tab_view.cc
@@ -3513,3 +3532,35 @@ index 000000000..5448bb06e
 +}  // namespace workspaces
 +
 +#endif
+diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
+index 8c01e0ab6..aa66d531e 100644
+--- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
++++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
+@@ -764,6 +764,15 @@ void DesktopWindowTreeHostPlatform::ClearNativeFocus() {
+   }
+ }
+ 
++DesktopWindowTreeHost::WindowTreeHosts
++DesktopWindowTreeHostPlatform::GetOwnedWindowTreeHosts() {
++  WindowTreeHosts window_tree_hosts;
++  for (DesktopWindowTreeHostPlatform* child : window_children_) {
++    window_tree_hosts.insert(child);
++  }
++  return window_tree_hosts;
++}
++
+ bool DesktopWindowTreeHostPlatform::IsMoveLoopSupported() const {
+   return platform_window()->IsClientControlledWindowMovementSupported();
+ }
+diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h
+index 1a9a021ec..087d72404 100644
+--- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h
++++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h
+@@ -115,6 +115,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
+   bool IsVisibleOnAllWorkspaces() const override;
+   bool SetWindowTitle(const std::u16string& title) override;
+   void ClearNativeFocus() override;
++  WindowTreeHosts GetOwnedWindowTreeHosts() override;
+   bool IsMoveLoopSupported() const override;
+   Widget::MoveLoopResult RunMoveLoop(
+       const gfx::Vector2d& drag_offset,
