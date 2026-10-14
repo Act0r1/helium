@@ -4752,6 +4752,55 @@ index 000000000..5448bb06e
 +}  // namespace workspaces
 +
 +#endif
+diff --git a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc
+index c20742813..2375f22e3 100644
+--- a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc
++++ b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc
+@@ -454,6 +454,7 @@ NewTabPageHandler::NewTabPageHandler(
+     const std::vector<ntp::ModuleIdDetail>* module_id_details)
+     : SettingsEnabledObserver(
+           optimization_guide::UserVisibleFeatureKey::kWallpaperSearch),
++      content::WebContentsObserver(web_contents),
+       logger_(profile,
+               chrome::ChromeUINewTabPageURLAsGURL(),
+               ntp_navigation_start_time_ticks),
+@@ -1153,6 +1154,10 @@ void NewTabPageHandler::OnThemeChanged() {
+                             web_contents_));
+ }
+ 
++void NewTabPageHandler::OnColorProviderChanged() {
++  OnThemeChanged();
++}
++
+ void NewTabPageHandler::OnCustomBackgroundImageUpdated() {
+   OnThemeChanged();
+ }
+diff --git a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h
+index af7123d31..901867874 100644
+--- a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h
++++ b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h
+@@ -81,7 +81,8 @@ class NewTabPageHandler
+       public NtpCustomBackgroundServiceObserver,
+       public optimization_guide::SettingsEnabledObserver,
+       public MicrosoftAuthServiceObserver,
+-      public new_tab_footer::NewTabFooterControllerObserver {
++      public new_tab_footer::NewTabFooterControllerObserver,
++      public content::WebContentsObserver {
+  public:
+   NewTabPageHandler(mojo::PendingReceiver<new_tab_page::mojom::PageHandler>
+                         pending_page_handler,
+@@ -173,6 +174,11 @@ class NewTabPageHandler
+   // ThemeServiceObserver:
+   void OnThemeChanged() override;
+ 
++  // content::WebContentsObserver:
++  // Follows the colors of the hosting window, which a workspace theme changes
++  // without a profile theme change.
++  void OnColorProviderChanged() override;
++
+   // NtpCustomBackgroundServiceObserver:
+   void OnCustomBackgroundImageUpdated() override;
+ 
 diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
 index 8c01e0ab6..aa66d531e 100644
 --- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
