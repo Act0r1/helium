@@ -1295,7 +1295,7 @@ index fe76a1b5d..7210c8225 100644
  
 diff --git a/chrome/browser/ui/views/workspaces/workspace_background.cc b/chrome/browser/ui/views/workspaces/workspace_background.cc
 new file mode 100644
-index 000000000..fff4f99e2
+index 000000000..efd8f41d6
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_background.cc
 @@ -0,0 +1,203 @@
@@ -1351,8 +1351,8 @@ index 000000000..fff4f99e2
 +  return *tile;
 +}
 +
-+// Paints `theme` over `base` into `bounds` of `canvas`, with the gradient
-+// spanning `area`, the BrowserView bounds in canvas coordinates.
++// Paints `theme` over `base` into `bounds` of `canvas`, with the vertical
++// gradient spanning `area`, the BrowserView bounds in canvas coordinates.
 +void PaintLook(gfx::Canvas* canvas,
 +               const gfx::Rect& bounds,
 +               const gfx::Rect& area,
@@ -1378,7 +1378,7 @@ index 000000000..fff4f99e2
 +    }
 +  }
 +  const SkPoint points[] = {SkPoint::Make(area.x(), area.y()),
-+                            SkPoint::Make(area.right(), area.bottom())};
++                            SkPoint::Make(area.x(), area.bottom())};
 +  cc::PaintFlags flags;
 +  flags.setShader(cc::PaintShader::MakeLinearGradient(
 +      points, colors.data(), nullptr, static_cast<int>(colors.size()),
