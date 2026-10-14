@@ -123,21 +123,25 @@ index 92d191c30..a4fd7cc36 100644
  };
  
 diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
-index d3181174b..c074cd258 100644
+index d3181174b..b340bb747 100644
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -1513,6 +1513,10 @@ static_library("ui") {
+@@ -1513,6 +1513,14 @@ static_library("ui") {
    } else {
      # !is_android
      sources += [
++      "views/workspaces/workspace_background.cc",
++      "views/workspaces/workspace_background.h",
 +      "views/workspaces/workspace_switcher_view.cc",
 +      "views/workspaces/workspace_switcher_view.h",
++      "views/workspaces/workspace_theme_picker.cc",
++      "views/workspaces/workspace_theme_picker.h",
 +      "workspaces/workspace_controller.cc",
 +      "workspaces/workspace_controller.h",
        # This file physically lives in //chrome/browser but is compiled here so
        # that //chrome/browser:browser has no remaining sources. It registers
        # WebUI interface binders for desktop, which need this target's headers.
-@@ -3426,6 +3430,7 @@ static_library("ui") {
+@@ -3426,6 +3434,7 @@ static_library("ui") {
        # - c/b/ui/views/frame/browser_view.h
        # - c/b/ui/views/frame/themed_background.h
        # - c/b/ui/views/frame/vertical_tab_strip_region_view.h
@@ -145,7 +149,7 @@ index d3181174b..c074cd258 100644
        "//chrome/browser/ui/views/tabs/common:impl",
  
        # TODO(crbug.com/353332589): Remove this circular dependency when the
-@@ -4343,13 +4348,22 @@ source_set("unit_tests") {
+@@ -4343,13 +4352,22 @@ source_set("unit_tests") {
        "browser_unittest.cc",
        "browser_window_state_unittest.cc",
        "intent_picker_tab_helper_unittest.cc",
@@ -769,10 +773,10 @@ index 47f4f372e..874fa65c7 100644
    registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.cc b/chrome/browser/ui/workspaces/workspace_controller.cc
 new file mode 100644
-index 000000000..1092d1078
+index 000000000..e48bb230c
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.cc
-@@ -0,0 +1,646 @@
+@@ -0,0 +1,732 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -780,13 +784,16 @@ index 000000000..1092d1078
 +#include "chrome/browser/ui/workspaces/workspace_controller.h"
 +
 +#include <algorithm>
++#include <array>
 +#include <optional>
++#include <string_view>
 +
 +#include "base/auto_reset.h"
 +#include "base/functional/bind.h"
 +#include "base/json/json_reader.h"
 +#include "base/json/json_writer.h"
 +#include "base/strings/string_number_conversions.h"
++#include "base/strings/stringprintf.h"
 +#include "base/strings/utf_string_conversions.h"
 +#include "base/task/sequenced_task_runner.h"
 +#include "base/uuid.h"
@@ -822,6 +829,11 @@ index 000000000..1092d1078
 +constexpr char kNameKey[] = "name";
 +constexpr char kIconKey[] = "icon";
 +constexpr char kColorKey[] = "color";
++constexpr char kThemeKey[] = "theme";
++constexpr char kThemeColorsKey[] = "colors";
++constexpr char kThemeIntensityKey[] = "intensity";
++constexpr char kThemeGrainKey[] = "grain";
++constexpr char kThemeModeKey[] = "mode";
 +constexpr char kPinnedCollapsedKey[] = "pinned_collapsed";
 +constexpr char kEssentialsId[] = "essentials";
 +
@@ -859,10 +871,83 @@ index 000000000..1092d1078
 +  }
 +}
 +
-+tab_groups::TabGroupColorId ColorForIndex(size_t index) {
-+  constexpr int kCount =
-+      static_cast<int>(tab_groups::TabGroupColorId::kNumEntries);
-+  return static_cast<tab_groups::TabGroupColorId>(index % kCount);
++// Colors of new workspaces, in the order of the former tab group colors after
++// grey, which old sessions stored as `kColorKey`.
++constexpr auto kPresetColors = std::to_array<SkColor>({
++    SkColorSetRGB(0x4C, 0x8D, 0xF6), SkColorSetRGB(0xE5, 0x53, 0x4B),
++    SkColorSetRGB(0xF2, 0xC9, 0x4C), SkColorSetRGB(0x3F, 0xB9, 0x50),
++    SkColorSetRGB(0xF7, 0x78, 0xBA), SkColorSetRGB(0xA3, 0x71, 0xF7),
++    SkColorSetRGB(0x39, 0xC5, 0xCF), SkColorSetRGB(0xF0, 0x88, 0x3E),
++});
++
++// The first workspace keeps the profile theme, the others cycle the presets.
++WorkspaceTheme ThemeForIndex(size_t index) {
++  WorkspaceTheme theme;
++  if (index > 0) {
++    theme.colors = {kPresetColors[(index - 1) % kPresetColors.size()]};
++  }
++  return theme;
++}
++
++std::string ColorToString(SkColor color) {
++  return base::StringPrintf("#%06X", color & 0xFFFFFF);
++}
++
++std::optional<SkColor> ColorFromString(std::string_view text) {
++  uint32_t rgb = 0;
++  if (text.size() != 7 || text[0] != '#' ||
++      !base::HexStringToUInt(text.substr(1), &rgb)) {
++    return std::nullopt;
++  }
++  return SkColorSetA(rgb, SK_AlphaOPAQUE);
++}
++
++base::DictValue SerializeTheme(const WorkspaceTheme& theme) {
++  base::ListValue colors;
++  for (SkColor color : theme.colors) {
++    colors.Append(ColorToString(color));
++  }
++  return base::DictValue()
++      .Set(kThemeColorsKey, std::move(colors))
++      .Set(kThemeIntensityKey, static_cast<double>(theme.intensity))
++      .Set(kThemeGrainKey, theme.grain)
++      .Set(kThemeModeKey, static_cast<int>(theme.mode));
++}
++
++// Reads the theme of a workspace, or converts the tab group color index that
++// sessions stored before themes existed.
++std::optional<WorkspaceTheme> DeserializeTheme(const base::DictValue& dict) {
++  WorkspaceTheme theme;
++  if (const base::DictValue* value = dict.FindDict(kThemeKey)) {
++    if (const base::ListValue* colors = value->FindList(kThemeColorsKey)) {
++      for (const base::Value& color : *colors) {
++        const std::optional<SkColor> parsed =
++            color.is_string() ? ColorFromString(color.GetString())
++                              : std::nullopt;
++        if (parsed && theme.colors.size() < kMaxThemeColors) {
++          theme.colors.push_back(*parsed);
++        }
++      }
++    }
++    theme.intensity = static_cast<float>(std::clamp(
++        value->FindDouble(kThemeIntensityKey).value_or(theme.intensity), 0.0,
++        1.0));
++    theme.grain = value->FindBool(kThemeGrainKey).value_or(theme.grain);
++    const int mode = value->FindInt(kThemeModeKey).value_or(0);
++    if (mode >= static_cast<int>(WorkspaceColorMode::kSystem) &&
++        mode <= static_cast<int>(WorkspaceColorMode::kDark)) {
++      theme.mode = static_cast<WorkspaceColorMode>(mode);
++    }
++    return theme;
++  }
++  const std::optional<int> color = dict.FindInt(kColorKey);
++  if (!color || *color < 0 || *color > static_cast<int>(kPresetColors.size())) {
++    return std::nullopt;
++  }
++  if (*color > 0) {
++    theme.colors = {kPresetColors[*color - 1]};
++  }
++  return theme;
 +}
 +
 +// A tab, group or split that is moved between workspaces as a whole.
@@ -888,7 +973,7 @@ index 000000000..1092d1078
 +  if (workspaces_.empty()) {
 +    workspaces_.push_back(
 +        {NewId(), l10n_util::GetStringUTF16(IDS_WORKSPACE_DEFAULT_NAME),
-+         FreeIcon(workspaces_), ColorForIndex(0)});
++         FreeIcon(workspaces_), ThemeForIndex(0)});
 +  }
 +  FillMissingIcons(workspaces_);
 +  if (!FindWorkspace(active_)) {
@@ -929,7 +1014,7 @@ index 000000000..1092d1078
 +                    .Set(kIdKey, workspace.id)
 +                    .Set(kNameKey, base::UTF16ToUTF8(workspace.name))
 +                    .Set(kIconKey, base::UTF16ToUTF8(workspace.icon))
-+                    .Set(kColorKey, static_cast<int>(workspace.color))
++                    .Set(kThemeKey, SerializeTheme(workspace.theme))
 +                    .Set(kPinnedCollapsedKey, workspace.pinned_collapsed));
 +  }
 +  return base::WriteJson(base::DictValue()
@@ -960,14 +1045,12 @@ index 000000000..1092d1078
 +    const std::string* id = dict->FindString(kIdKey);
 +    const std::string* name = dict->FindString(kNameKey);
 +    const std::string* icon = dict->FindString(kIconKey);
-+    const std::optional<int> color = dict->FindInt(kColorKey);
-+    if (!id || id->empty() || !name || !icon || !color ||
-+        !tab_groups::GetTabGroupColorLabelMap().contains(
-+            static_cast<tab_groups::TabGroupColorId>(*color))) {
++    std::optional<WorkspaceTheme> theme = DeserializeTheme(*dict);
++    if (!id || id->empty() || !name || !icon || !theme) {
 +      return false;
 +    }
 +    result.push_back({*id, base::UTF8ToUTF16(*name), base::UTF8ToUTF16(*icon),
-+                      static_cast<tab_groups::TabGroupColorId>(*color),
++                      std::move(*theme),
 +                      dict->FindBool(kPinnedCollapsedKey).value_or(false)});
 +  }
 +  const std::string* active_id = root->FindString(kActiveKey);
@@ -978,6 +1061,13 @@ index 000000000..1092d1078
 +
 +const Workspace* WorkspaceController::GetActiveWorkspace() const {
 +  return FindWorkspace(active_);
++}
++
++const WorkspaceTheme* WorkspaceController::GetShownTheme() const {
++  const Workspace* active = GetActiveWorkspace();
++  return active && !active->theme.colors.empty() && IsFilteringTabs()
++             ? &active->theme
++             : nullptr;
 +}
 +
 +const Workspace* WorkspaceController::GetWorkspaceOf(
@@ -1051,7 +1141,7 @@ index 000000000..1092d1078
 +std::string WorkspaceController::CreateWorkspace() {
 +  const std::string id = NewId();
 +  workspaces_.push_back({id, FreeName(workspaces_), FreeIcon(workspaces_),
-+                         ColorForIndex(workspaces_.size())});
++                         ThemeForIndex(workspaces_.size())});
 +  ActivateWorkspace(id);
 +  NotifyWorkspacesChanged();
 +  return id;
@@ -1421,10 +1511,10 @@ index 000000000..1092d1078
 +}  // namespace workspaces
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.h b/chrome/browser/ui/workspaces/workspace_controller.h
 new file mode 100644
-index 000000000..d2542aa5c
+index 000000000..5c18a4e1b
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.h
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,191 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1444,8 +1534,8 @@ index 000000000..d2542aa5c
 +#include "base/observer_list.h"
 +#include "base/observer_list_types.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-+#include "components/tab_groups/tab_group_color.h"
 +#include "components/tabs/public/tab_interface.h"
++#include "third_party/skia/include/core/SkColor.h"
 +#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 +
 +class BrowserWindowInterface;
@@ -1464,11 +1554,32 @@ index 000000000..d2542aa5c
 +    u"🐶", u"🌸", u"🌙", u"🌞", u"🍀", u"🎁", u"🧳", u"🚗",
 +});
 +
++inline constexpr size_t kMaxThemeColors = 3;
++
++enum class WorkspaceColorMode {
++  kSystem = 0,
++  kLight = 1,
++  kDark = 2,
++};
++
++// Arc-style theme of a workspace: a gradient of up to `kMaxThemeColors` colors
++// painted behind the browser chrome, whose first color also seeds the browser
++// color palette. A theme without colors keeps the profile theme.
++struct WorkspaceTheme {
++  std::vector<SkColor> colors;
++  // From 0 to 1: how vivid the palette and how opaque the gradient are.
++  float intensity = 0.5f;
++  bool grain = true;
++  WorkspaceColorMode mode = WorkspaceColorMode::kSystem;
++
++  bool operator==(const WorkspaceTheme&) const = default;
++};
++
 +struct Workspace {
 +  std::string id;
 +  std::u16string name;
 +  std::u16string icon;
-+  tab_groups::TabGroupColorId color = tab_groups::TabGroupColorId::kGrey;
++  WorkspaceTheme theme;
 +  bool pinned_collapsed = false;
 +
 +  bool operator==(const Workspace&) const = default;
@@ -1506,6 +1617,9 @@ index 000000000..d2542aa5c
 +
 +  const std::vector<Workspace>& GetWorkspaces() const { return workspaces_; }
 +  const Workspace* GetActiveWorkspace() const;
++  // Returns the theme of the active workspace while workspaces are shown and
++  // the theme has colors, nullptr otherwise.
++  const WorkspaceTheme* GetShownTheme() const;
 +  // Returns nullptr for Essentials.
 +  const Workspace* GetWorkspaceOf(const tabs::TabInterface* tab) const;
 +  bool IsEssential(const tabs::TabInterface* tab) const;
@@ -1594,10 +1708,10 @@ index 000000000..d2542aa5c
 +#endif  // CHROME_BROWSER_UI_WORKSPACES_WORKSPACE_CONTROLLER_H_
 diff --git a/chrome/browser/ui/workspaces/workspace_controller_unittest.cc b/chrome/browser/ui/workspaces/workspace_controller_unittest.cc
 new file mode 100644
-index 000000000..5248e9f28
+index 000000000..a441db91b
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller_unittest.cc
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,319 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1826,9 +1940,10 @@ index 000000000..5248e9f28
 +
 +TEST_F(WorkspaceControllerTest, SerializeRoundTrip) {
 +  const std::vector<Workspace> workspaces = {
-+      {"a", u"Work", u"💼", tab_groups::TabGroupColorId::kBlue},
-+      {"b", u"Home", u"", tab_groups::TabGroupColorId::kGreen,
-+       /*pinned_collapsed=*/true},
++      {"a", u"Work", u"💼",
++       {{SkColorSetRGB(0x12, 0x34, 0x56), SK_ColorWHITE}, 0.75f, false,
++        WorkspaceColorMode::kDark}},
++      {"b", u"Home", u"", {}, /*pinned_collapsed=*/true},
 +  };
 +  std::vector<Workspace> parsed;
 +  std::string active;
@@ -1839,11 +1954,40 @@ index 000000000..5248e9f28
 +  EXPECT_FALSE(WorkspaceController::Deserialize("{", &parsed, &active));
 +}
 +
++TEST_F(WorkspaceControllerTest, DeserializeConvertsTabGroupColors) {
++  std::vector<Workspace> parsed;
++  std::string active;
++  ASSERT_TRUE(WorkspaceController::Deserialize(
++      R"({"active":"a","workspaces":[)"
++      R"({"id":"a","name":"Work","icon":"","color":0},)"
++      R"({"id":"b","name":"Home","icon":"","color":1}]})",
++      &parsed, &active));
++  ASSERT_EQ(2u, parsed.size());
++  EXPECT_TRUE(parsed[0].theme.colors.empty());
++  EXPECT_EQ(std::vector<SkColor>{SkColorSetRGB(0x4C, 0x8D, 0xF6)},
++            parsed[1].theme.colors);
++}
++
++TEST_F(WorkspaceControllerTest, ThemeIsShownWithColorsAndVerticalTabs) {
++  controller()->CreateWorkspace();
++  Flush();
++  EXPECT_EQ(nullptr, controller()->GetShownTheme());
++  EnableVerticalTabs();
++  ASSERT_NE(nullptr, controller()->GetShownTheme());
++  controller()->ActivateWorkspaceAt(0);
++  Flush();
++  EXPECT_EQ(nullptr, controller()->GetShownTheme());
++  controller()->ActivateWorkspaceAt(1);
++  Flush();
++  ASSERT_NE(nullptr, controller()->GetShownTheme());
++  EXPECT_EQ(controller()->GetActiveWorkspace()->theme,
++            *controller()->GetShownTheme());
++}
++
 +TEST_F(WorkspaceControllerTest, MergeRestoredWorkspacesAddsMissing) {
 +  const std::string active = ActiveId();
 +  const Workspace existing = *controller()->GetActiveWorkspace();
-+  const Workspace restored = {"restored", u"Work", u"🚗",
-+                              tab_groups::TabGroupColorId::kRed};
++  const Workspace restored = {"restored", u"Work", u"🚗", {{SK_ColorRED}}};
 +  controller()->MergeRestoredWorkspaces(
 +      WorkspaceController::Serialize({existing, restored}, "restored"));
 +  ASSERT_EQ(2u, controller()->GetWorkspaces().size());
@@ -1871,7 +2015,7 @@ index 000000000..5248e9f28
 +
 +TEST_F(WorkspaceControllerTest, RestoredWorkspacesWithoutIconGetOne) {
 +  controller()->MergeRestoredWorkspaces(WorkspaceController::Serialize(
-+      {{"restored", u"Work", u"", tab_groups::TabGroupColorId::kRed}},
++      {{"restored", u"Work", u"", {{SK_ColorRED}}}},
 +      "restored"));
 +  ASSERT_EQ(2u, controller()->GetWorkspaces().size());
 +  EXPECT_EQ(kWorkspaceIcons[1], controller()->GetWorkspaces()[1].icon);

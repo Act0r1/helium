@@ -1,8 +1,38 @@
 diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
-index 19bf2971d..bd17d075f 100644
+index 19bf2971d..3322819cf 100644
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -2045,6 +2045,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
+@@ -242,6 +242,7 @@
+ #include "chrome/browser/ui/views/update_recommended_message_box.h"
+ #include "chrome/browser/ui/views/user_education/browser_user_education_service.h"
+ #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
++#include "chrome/browser/ui/views/workspaces/workspace_background.h"
+ #include "chrome/browser/ui/waap/initial_web_ui_manager.h"
+ #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+@@ -1113,6 +1114,13 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
+     horizontal_tab_strip_region_view_->InitializeTabStrip();
+   }
+ 
++  if (auto* const workspace_controller =
++          workspaces::WorkspaceController::From(browser_)) {
++    workspace_background_ =
++        std::make_unique<workspaces::WorkspaceBackground>(
++            this, workspace_controller);
++  }
++
+   if (auto* const organizer_panel_controller =
+           OrganizerPanelController::From(browser_)) {
+     organizer_tray_ =
+@@ -1236,6 +1244,7 @@ BrowserView::~BrowserView() {
+   // Stop the animation timer explicitly here to avoid running it in a nested
+   // message loop, which may run by Browser destructor.
+   loading_animation_timer_.Stop();
++  workspace_background_.reset();
+   zen_mode_event_monitor_.reset();
+   app_menu_control_observation_.Reset();
+ 
+@@ -2045,6 +2054,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
      reveal_side = true;
    }
  
@@ -17,7 +47,7 @@ index 19bf2971d..bd17d075f 100644
    // Pinned top chrome stays visible regardless of cursor position.
    if (IsZenModeTopChromePinned()) {
      reveal_top = true;
-@@ -2220,6 +2228,45 @@ void BrowserView::AppMenuClosed() {
+@@ -2220,6 +2237,45 @@ void BrowserView::AppMenuClosed() {
    }
  }
  
@@ -63,7 +93,7 @@ index 19bf2971d..bd17d075f 100644
  bool BrowserView::IsPointInZenTopChromeBounds(const gfx::Point& point) const {
    if (!top_container_ || !top_container_->parent()) {
      return false;
-@@ -4846,9 +4893,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
+@@ -4846,9 +4902,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
      }
    }
  
@@ -81,7 +111,7 @@ index 19bf2971d..bd17d075f 100644
    }
  
    ExtensionKeybindingRegistryViews::From(browser_)->OnHostActivationChanged(
-@@ -6868,6 +6921,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
+@@ -6868,6 +6930,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
  
  void BrowserView::AnimationEnded(const gfx::Animation* animation) {
    AnimationProgressed(animation);
@@ -92,10 +122,34 @@ index 19bf2971d..bd17d075f 100644
  
  WebAppFrameToolbarView* BrowserView::web_app_frame_toolbar() {
 diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
-index c91e80277..ee8354f77 100644
+index c91e80277..d19f92410 100644
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
-@@ -440,6 +440,9 @@ class BrowserView : public BrowserWindow,
+@@ -124,6 +124,10 @@ namespace version_info {
+ enum class Channel;
+ }
+ 
++namespace workspaces {
++class WorkspaceBackground;
++}  // namespace workspaces
++
+ namespace views {
+ class EventMonitor;
+ class LabelButton;
+@@ -252,6 +256,12 @@ class BrowserView : public BrowserWindow,
+     theme_background_y_offset_ = offset;
+   }
+ 
++  // Returns the painter of the workspace theme behind the browser chrome, or
++  // nullptr if the window has no workspaces.
++  const workspaces::WorkspaceBackground* workspace_background() const {
++    return workspace_background_.get();
++  }
++
+ #if BUILDFLAG(IS_MAC)
+   views::Widget* overlay_widget() { return overlay_widget_.get(); }
+   const views::Widget* overlay_widget() const { return overlay_widget_.get(); }
+@@ -440,6 +450,9 @@ class BrowserView : public BrowserWindow,
    void ToggleZenModeSideChrome();
    void ToggleZenModeTopChrome();
  
@@ -105,6 +159,102 @@ index c91e80277..ee8354f77 100644
    // Returns the widget for anchoring bubbles and dialogs.
    // This returns BrowserWidget except on fullscreen macOS where the toolbar is
    // hosted in an OverlayWidget.
+@@ -1231,6 +1244,8 @@ class BrowserView : public BrowserWindow,
+   // details)
+   std::optional<int> theme_background_y_offset_;
+ 
++  std::unique_ptr<workspaces::WorkspaceBackground> workspace_background_;
++
+   // Menu button and page status icons. Only used by web-app windows.
+   raw_ptr<WebAppFrameToolbarView> web_app_frame_toolbar_ = nullptr;
+ 
+diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
+index 3ba0091e4..61c5a7852 100644
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -35,6 +35,7 @@
+ #include "chrome/browser/ui/views/frame/top_container_view.h"
+ #include "chrome/browser/ui/views/helium/native_frame_materials.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
+ #include "chrome/common/chrome_switches.h"
+ #include "ui/base/hit_test.h"
+ #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+@@ -66,6 +67,37 @@
+ #endif
+ namespace {
+ 
++// Lets the theme of the active workspace replace the profile theme.
++void ApplyWorkspaceTheme(BrowserWindowInterface* browser,
++                         ui::ColorProviderKey& key) {
++  const auto* controller = workspaces::WorkspaceController::From(browser);
++  const workspaces::WorkspaceTheme* theme =
++      controller ? controller->GetShownTheme() : nullptr;
++  if (!theme) {
++    return;
++  }
++  key.user_color = theme->colors.front();
++  key.user_color_source = ui::ColorProviderKey::UserColorSource::kAccent;
++  key.scheme_variant =
++      theme->intensity < 1.0f / 3
++          ? ui::ColorProviderKey::SchemeVariant::kNeutral
++          : (theme->intensity < 2.0f / 3
++                 ? ui::ColorProviderKey::SchemeVariant::kTonalSpot
++                 : ui::ColorProviderKey::SchemeVariant::kVibrant);
++  key.custom_theme = nullptr;
++  key.system_theme = ui::SystemTheme::kDefault;
++  switch (theme->mode) {
++    case workspaces::WorkspaceColorMode::kSystem:
++      break;
++    case workspaces::WorkspaceColorMode::kLight:
++      key.color_mode = ui::ColorProviderKey::ColorMode::kLight;
++      break;
++    case workspaces::WorkspaceColorMode::kDark:
++      key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
++      break;
++  }
++}
++
+ // Helper to track whether a ThemeChange event has been received by the widget.
+ class ThemeChangedObserver : public views::WidgetObserver {
+  public:
+@@ -492,6 +524,7 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+ 
+   key = theme_service->GetColorProviderKey(key, profile);
+   key.custom_theme = GetCustomTheme();
++  ApplyWorkspaceTheme(browser_view_->browser(), key);
+ 
+   // Re-apply Widget overrides because GetColorProviderKey might have
+   // overwritten them.
+diff --git a/chrome/browser/ui/views/frame/themed_background.cc b/chrome/browser/ui/views/frame/themed_background.cc
+index 25e457835..9c6eeebcd 100644
+--- a/chrome/browser/ui/views/frame/themed_background.cc
++++ b/chrome/browser/ui/views/frame/themed_background.cc
+@@ -12,6 +12,7 @@
+ #include "chrome/browser/ui/views/frame/top_container_view.h"
+ #include "chrome/browser/ui/views/helium/native_frame_materials.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip.h"
++#include "chrome/browser/ui/views/workspaces/workspace_background.h"
+ #include "chrome/grit/theme_resources.h"
+ #include "ui/base/theme_provider.h"
+ #include "ui/color/color_id.h"
+@@ -114,8 +115,14 @@ void ThemedBackground::PaintBackground(gfx::Canvas* canvas,
+   bool painted =
+       PaintThemeCustomImage(canvas, view, browser_view, theme_choice);
+   if (!painted) {
+-    canvas->DrawColor(view->GetColorProvider()->GetColor(
+-        GetThemeChoiceInfo(theme_choice, view).second));
++    const SkColor color = view->GetColorProvider()->GetColor(
++        GetThemeChoiceInfo(theme_choice, view).second);
++    const workspaces::WorkspaceBackground* workspace_background =
++        browser_view->workspace_background();
++    if (!workspace_background ||
++        !workspace_background->Paint(canvas, view, color)) {
++      canvas->DrawColor(color);
++    }
+   }
+ }
+ 
 diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
 index b7478d5cb..843335c5d 100644
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
@@ -1143,12 +1293,307 @@ index fe76a1b5d..7210c8225 100644
    base::CallbackListSubscription collapsed_state_change_subscription_;
    base::CallbackListSubscription new_tab_button_pressed_subscription_;
  
+diff --git a/chrome/browser/ui/views/workspaces/workspace_background.cc b/chrome/browser/ui/views/workspaces/workspace_background.cc
+new file mode 100644
+index 000000000..fff4f99e2
+--- /dev/null
++++ b/chrome/browser/ui/views/workspaces/workspace_background.cc
+@@ -0,0 +1,203 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/workspaces/workspace_background.h"
++
++#include <cstdint>
++#include <vector>
++
++#include "base/no_destructor.h"
++#include "base/time/time.h"
++#include "cc/paint/paint_flags.h"
++#include "cc/paint/paint_shader.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkPath.h"
++#include "ui/gfx/animation/tween.h"
++#include "ui/gfx/canvas.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/geometry/rect_conversions.h"
++#include "ui/gfx/geometry/skia_conversions.h"
++#include "ui/gfx/image/image_skia.h"
++#include "ui/views/view.h"
++#include "ui/views/widget/widget.h"
++
++namespace workspaces {
++
++namespace {
++
++constexpr base::TimeDelta kCrossFadeDuration = base::Milliseconds(320);
++constexpr int kGrainSize = 128;
++constexpr uint8_t kGrainAlpha = 0x1C;
++
++// Returns a tile of deterministic monochrome noise.
++const gfx::ImageSkia& GrainTile() {
++  static const base::NoDestructor<gfx::ImageSkia> tile([] {
++    SkBitmap bitmap;
++    bitmap.allocN32Pixels(kGrainSize, kGrainSize);
++    uint32_t state = 0x2545F491;
++    for (int y = 0; y < kGrainSize; ++y) {
++      for (int x = 0; x < kGrainSize; ++x) {
++        state = state * 1664525u + 1013904223u;
++        const uint8_t value = state >> 24;
++        *bitmap.getAddr32(x, y) = SkPreMultiplyARGB(0xFF, value, value, value);
++      }
++    }
++    bitmap.setImmutable();
++    return gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
++  }());
++  return *tile;
++}
++
++// Paints `theme` over `base` into `bounds` of `canvas`, with the gradient
++// spanning `area`, the BrowserView bounds in canvas coordinates.
++void PaintLook(gfx::Canvas* canvas,
++               const gfx::Rect& bounds,
++               const gfx::Rect& area,
++               SkColor base,
++               const WorkspaceTheme& theme) {
++  canvas->DrawColor(base);
++  if (theme.colors.empty()) {
++    return;
++  }
++
++  const float alpha = 0.25f + 0.55f * theme.intensity;
++  std::vector<SkColor4f> colors;
++  if (theme.colors.size() == 1) {
++    SkColor4f color = SkColor4f::FromColor(theme.colors.front());
++    colors.push_back(color.makeOpaque());
++    colors.back().fA = alpha;
++    colors.push_back(color.makeOpaque());
++    colors.back().fA = alpha * 0.35f;
++  } else {
++    for (SkColor color : theme.colors) {
++      colors.push_back(SkColor4f::FromColor(color).makeOpaque());
++      colors.back().fA = alpha;
++    }
++  }
++  const SkPoint points[] = {SkPoint::Make(area.x(), area.y()),
++                            SkPoint::Make(area.right(), area.bottom())};
++  cc::PaintFlags flags;
++  flags.setShader(cc::PaintShader::MakeLinearGradient(
++      points, colors.data(), nullptr, static_cast<int>(colors.size()),
++      SkTileMode::kClamp));
++  canvas->DrawRect(bounds, flags);
++
++  if (theme.grain) {
++    cc::PaintFlags grain;
++    grain.setAlphaf(kGrainAlpha / 255.0f);
++    grain.setBlendMode(SkBlendMode::kOverlay);
++    canvas->TileImageInt(GrainTile(), bounds.x() - area.x(),
++                         bounds.y() - area.y(), bounds.x(), bounds.y(),
++                         bounds.width(), bounds.height(), 1.0f,
++                         SkTileMode::kRepeat, SkTileMode::kRepeat, &grain);
++  }
++}
++
++// Schedules a paint of `view` and every descendant painted into its own layer.
++void SchedulePaintLayers(views::View* view) {
++  if (view->layer()) {
++    view->SchedulePaint();
++  }
++  for (views::View* child : view->children()) {
++    SchedulePaintLayers(child);
++  }
++}
++
++}  // namespace
++
++WorkspaceBackground::WorkspaceBackground(BrowserView* browser_view,
++                                         WorkspaceController* controller)
++    : browser_view_(browser_view), controller_(controller) {
++  animation_.SetSlideDuration(kCrossFadeDuration);
++  animation_.SetTweenType(gfx::Tween::EASE_IN_OUT);
++  if (const Workspace* active = controller_->GetActiveWorkspace()) {
++    shown_id_ = active->id;
++  }
++  if (const WorkspaceTheme* theme = controller_->GetShownTheme()) {
++    shown_theme_ = *theme;
++  }
++  observation_.Observe(controller_);
++}
++
++WorkspaceBackground::~WorkspaceBackground() = default;
++
++bool WorkspaceBackground::Paint(gfx::Canvas* canvas,
++                                const views::View* view,
++                                SkColor base) const {
++  const bool fading = previous_ && animation_.is_animating();
++  if (!fading) {
++    last_base_ = base;
++  }
++  if (shown_theme_.colors.empty() && !fading) {
++    return false;
++  }
++
++  gfx::Point origin;
++  views::View::ConvertPointToTarget(browser_view_, view, &origin);
++  const gfx::Rect area(origin, browser_view_->size());
++  const SkPath& clip_path = view->clip_path();
++  const gfx::Rect bounds =
++      clip_path.isEmpty()
++          ? view->GetLocalBounds()
++          : gfx::ToEnclosingRect(gfx::SkRectToRectF(clip_path.getBounds()));
++
++  if (!fading) {
++    PaintLook(canvas, bounds, area, base, shown_theme_);
++    return true;
++  }
++  PaintLook(canvas, bounds, area, previous_->base, previous_->theme);
++  canvas->SaveLayerAlpha(
++      static_cast<uint8_t>(animation_.GetCurrentValue() * 255), bounds);
++  PaintLook(canvas, bounds, area, base, shown_theme_);
++  canvas->Restore();
++  return true;
++}
++
++void WorkspaceBackground::OnWorkspacesChanged() {
++  Sync();
++}
++
++void WorkspaceBackground::OnActiveWorkspaceChanged() {
++  Sync();
++}
++
++void WorkspaceBackground::AnimationProgressed(const gfx::Animation* animation) {
++  SchedulePaintChrome();
++}
++
++void WorkspaceBackground::AnimationEnded(const gfx::Animation* animation) {
++  previous_.reset();
++  SchedulePaintChrome();
++}
++
++void WorkspaceBackground::Sync() {
++  const Workspace* active = controller_->GetActiveWorkspace();
++  const std::string id = active ? active->id : std::string();
++  const WorkspaceTheme* shown = controller_->GetShownTheme();
++  const WorkspaceTheme theme = shown ? *shown : WorkspaceTheme();
++  if (id == shown_id_ && theme == shown_theme_) {
++    return;
++  }
++
++  if (id != shown_id_ && browser_view_->GetWidget() &&
++      browser_view_->GetWidget()->IsVisible()) {
++    previous_ = Look{last_base_, shown_theme_};
++    animation_.Reset();
++    animation_.Show();
++  }
++  shown_id_ = id;
++  shown_theme_ = theme;
++  if (views::Widget* widget = browser_view_->GetWidget()) {
++    widget->ThemeChanged();
++  }
++  SchedulePaintChrome();
++}
++
++void WorkspaceBackground::SchedulePaintChrome() {
++  browser_view_->SchedulePaint();
++  SchedulePaintLayers(browser_view_);
++}
++
++}  // namespace workspaces
+diff --git a/chrome/browser/ui/views/workspaces/workspace_background.h b/chrome/browser/ui/views/workspaces/workspace_background.h
+new file mode 100644
+index 000000000..33b40f415
+--- /dev/null
++++ b/chrome/browser/ui/views/workspaces/workspace_background.h
+@@ -0,0 +1,80 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_BACKGROUND_H_
++#define CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_BACKGROUND_H_
++
++#include <optional>
++#include <string>
++
++#include "base/memory/raw_ptr.h"
++#include "base/scoped_observation.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/gfx/animation/animation_delegate.h"
++#include "ui/gfx/animation/slide_animation.h"
++
++class BrowserView;
++
++namespace gfx {
++class Canvas;
++}
++
++namespace views {
++class View;
++}
++
++namespace workspaces {
++
++// Paints the gradient and grain of the active workspace theme behind the
++// browser chrome, aligned to the BrowserView so that all chrome views share
++// one gradient. Cross-fades the background when another workspace becomes
++// active, and applies theme changes to the browser color palette.
++class WorkspaceBackground : public WorkspaceController::Observer,
++                            public gfx::AnimationDelegate {
++ public:
++  WorkspaceBackground(BrowserView* browser_view,
++                      WorkspaceController* controller);
++  WorkspaceBackground(const WorkspaceBackground&) = delete;
++  WorkspaceBackground& operator=(const WorkspaceBackground&) = delete;
++  ~WorkspaceBackground() override;
++
++  // Paints the background of `view` over `base`, the solid chrome color.
++  // Returns false when no workspace theme is shown and nothing was painted.
++  bool Paint(gfx::Canvas* canvas, const views::View* view, SkColor base) const;
++
++  // WorkspaceController::Observer:
++  void OnWorkspacesChanged() override;
++  void OnActiveWorkspaceChanged() override;
++
++  // gfx::AnimationDelegate:
++  void AnimationProgressed(const gfx::Animation* animation) override;
++  void AnimationEnded(const gfx::Animation* animation) override;
++
++ private:
++  struct Look {
++    SkColor base = SK_ColorTRANSPARENT;
++    WorkspaceTheme theme;
++  };
++
++  void Sync();
++  void SchedulePaintChrome();
++
++  const raw_ptr<BrowserView> browser_view_;
++  const raw_ptr<WorkspaceController> controller_;
++  std::string shown_id_;
++  WorkspaceTheme shown_theme_;
++  // The look painted before the active workspace changed, faded out by
++  // `animation_`.
++  std::optional<Look> previous_;
++  // The base color of the last paint, which `previous_` keeps on a switch.
++  mutable SkColor last_base_ = SK_ColorTRANSPARENT;
++  gfx::SlideAnimation animation_{this};
++  base::ScopedObservation<WorkspaceController, WorkspaceController::Observer>
++      observation_{this};
++};
++
++}  // namespace workspaces
++
++#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_BACKGROUND_H_
 diff --git a/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
 new file mode 100644
-index 000000000..e31bc1792
+index 000000000..4aa3828bb
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
-@@ -0,0 +1,782 @@
+@@ -0,0 +1,796 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1175,6 +1620,7 @@ index 000000000..e31bc1792
 +#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
 +#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/workspaces/workspace_theme_picker.h"
 +#include "chrome/browser/ui/views/workspaces/workspace_vector_icons.h"
 +#include "chrome/browser/ui/workspaces/workspace_controller.h"
 +#include "chrome/grit/generated_resources.h"
@@ -1186,7 +1632,6 @@ index 000000000..e31bc1792
 +#include "ui/base/l10n/l10n_util.h"
 +#include "ui/base/metadata/metadata_header_macros.h"
 +#include "ui/base/metadata/metadata_impl_macros.h"
-+#include "ui/base/models/combobox_model.h"
 +#include "ui/base/models/dialog_model.h"
 +#include "ui/base/models/image_model.h"
 +#include "ui/base/mojom/menu_source_type.mojom-shared.h"
@@ -1225,7 +1670,7 @@ index 000000000..e31bc1792
 +
 +DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWorkspaceNameFieldId);
 +DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWorkspaceIconFieldId);
-+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWorkspaceColorFieldId);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWorkspaceThemeFieldId);
 +
 +constexpr int kChipSize = 28;
 +constexpr int kIconSize = 16;
@@ -1275,9 +1720,14 @@ index 000000000..e31bc1792
 +      FirstGrapheme(base::TrimWhitespace(workspace.name, base::TRIM_ALL)));
 +}
 +
++// Returns the accent color of `workspace`: the first theme color, or grey.
 +SkColor WorkspaceColor(const ui::ColorProvider* provider,
-+                       tab_groups::TabGroupColorId color_id) {
-+  return provider->GetColor(GetTabGroupContextMenuColorId(color_id));
++                       const workspaces::Workspace& workspace) {
++  if (!workspace.theme.colors.empty()) {
++    return workspace.theme.colors.front();
++  }
++  return provider->GetColor(
++      GetTabGroupContextMenuColorId(tab_groups::TabGroupColorId::kGrey));
 +}
 +
 +bool IsCollapsed(BrowserWindowInterface* browser) {
@@ -1285,39 +1735,6 @@ index 000000000..e31bc1792
 +  return state && state->GetCollapseState() !=
 +                      tabs::VerticalTabStripCollapseState::kExpanded;
 +}
-+
-+std::vector<tab_groups::TabGroupColorId> Colors() {
-+  std::vector<tab_groups::TabGroupColorId> colors;
-+  for (const auto& [color, label] : tab_groups::GetTabGroupColorLabelMap()) {
-+    colors.push_back(color);
-+  }
-+  return colors;
-+}
-+
-+class ColorComboboxModel : public ui::ComboboxModel {
-+ public:
-+  explicit ColorComboboxModel(tab_groups::TabGroupColorId selected)
-+      : colors_(Colors()), selected_(selected) {}
-+
-+  tab_groups::TabGroupColorId GetColorAt(size_t index) const {
-+    return colors_[index];
-+  }
-+
-+  size_t GetItemCount() const override { return colors_.size(); }
-+
-+  std::u16string GetItemAt(size_t index) const override {
-+    return tab_groups::GetTabGroupColorLabelMap().at(colors_[index]);
-+  }
-+
-+  std::optional<size_t> GetDefaultIndex() const override {
-+    const auto it = std::ranges::find(colors_, selected_);
-+    return it == colors_.end() ? 0 : it - colors_.begin();
-+  }
-+
-+ private:
-+  const std::vector<tab_groups::TabGroupColorId> colors_;
-+  const tab_groups::TabGroupColorId selected_;
-+};
 +
 +class WorkspaceChipButton : public views::LabelButton {
 +  METADATA_HEADER(WorkspaceChipButton, views::LabelButton)
@@ -1557,15 +1974,19 @@ index 000000000..e31bc1792
 +    auto icon_row = std::make_unique<views::FlexLayoutView>();
 +    WorkspaceIconButton* icon_button = icon_row->AddChildView(
 +        std::make_unique<WorkspaceIconButton>(IconText(*it)));
-+    auto color_model = std::make_unique<ColorComboboxModel>(it->color);
-+    const ColorComboboxModel* colors = color_model.get();
++    editor_accepted_ = false;
++    auto picker = std::make_unique<workspaces::WorkspaceThemePicker>(
++        it->theme, base::BindRepeating(&WorkspaceMenu::PreviewTheme,
++                                       weak_factory_.GetWeakPtr(), it->id));
++    const workspaces::WorkspaceThemePicker* theme_picker = picker.get();
 +    auto model_holder = std::make_unique<raw_ptr<ui::DialogModel>>();
 +    raw_ptr<ui::DialogModel>* model_ptr = model_holder.get();
 +    std::unique_ptr<ui::DialogModel> model =
 +        ui::DialogModel::Builder()
 +            .SetTitle(l10n_util::GetStringUTF16(IDS_WORKSPACE_EDIT))
-+            .SetDialogDestroyingCallback(
-+                base::DoNothingWithBoundArgs(KeepTabStripState(anchor_.view())))
++            .SetDialogDestroyingCallback(base::BindOnce(
++                &WorkspaceMenu::OnEditorClosed, weak_factory_.GetWeakPtr(),
++                it->id, it->theme, KeepTabStripState(anchor_.view())))
 +            .AddCustomField(
 +                std::make_unique<views::BubbleDialogModelHost::CustomView>(
 +                    std::move(icon_row),
@@ -1575,12 +1996,14 @@ index 000000000..e31bc1792
 +            .AddTextfield(kWorkspaceNameFieldId,
 +                          l10n_util::GetStringUTF16(IDS_WORKSPACE_NAME_LABEL),
 +                          it->name)
-+            .AddCombobox(kWorkspaceColorFieldId,
-+                         l10n_util::GetStringUTF16(IDS_WORKSPACE_COLOR_LABEL),
-+                         std::move(color_model))
++            .AddCustomField(
++                std::make_unique<views::BubbleDialogModelHost::CustomView>(
++                    std::move(picker),
++                    views::BubbleDialogModelHost::FieldType::kControl),
++                kWorkspaceThemeFieldId)
 +            .AddOkButton(base::BindOnce(
-+                &WorkspaceMenu::ApplyEdit, weak_factory_.GetWeakPtr(), *it,
-+                std::move(model_holder), icon_button, colors))
++                &WorkspaceMenu::ApplyEdit, weak_factory_.GetWeakPtr(), it->id,
++                std::move(model_holder), icon_button, theme_picker))
 +            .AddCancelButton(base::DoNothing())
 +            .SetInitiallyFocusedField(kWorkspaceNameFieldId)
 +            .Build();
@@ -1592,10 +2015,47 @@ index 000000000..e31bc1792
 +        ->Show();
 +  }
 +
-+  void ApplyEdit(workspaces::Workspace workspace,
++  // Returns a copy of the workspace with `id`, if it still exists.
++  std::optional<workspaces::Workspace> FindWorkspace(const std::string& id) {
++    const auto& workspaces = controller_->GetWorkspaces();
++    const auto it =
++        std::ranges::find(workspaces, id, &workspaces::Workspace::id);
++    if (it == workspaces.end()) {
++      return std::nullopt;
++    }
++    return *it;
++  }
++
++  // Shows `theme` on the workspace while its editor is open.
++  void PreviewTheme(const std::string& id,
++                    const workspaces::WorkspaceTheme& theme) {
++    std::optional<workspaces::Workspace> workspace = FindWorkspace(id);
++    if (!workspace || workspace->theme == theme) {
++      return;
++    }
++    workspace->theme = theme;
++    controller_->UpdateWorkspace(*workspace);
++  }
++
++  // Restores the theme previewed by a canceled editor.
++  void OnEditorClosed(const std::string& id,
++                      const workspaces::WorkspaceTheme& original,
++                      std::unique_ptr<ExpandOnHoverLock> lock) {
++    if (!editor_accepted_) {
++      PreviewTheme(id, original);
++    }
++  }
++
++  void ApplyEdit(const std::string& id,
 +                 std::unique_ptr<raw_ptr<ui::DialogModel>> model,
 +                 const WorkspaceIconButton* icon,
-+                 const ColorComboboxModel* colors) {
++                 const workspaces::WorkspaceThemePicker* theme_picker) {
++    editor_accepted_ = true;
++    std::optional<workspaces::Workspace> found = FindWorkspace(id);
++    if (!found) {
++      return;
++    }
++    workspaces::Workspace& workspace = *found;
 +    ui::DialogModel* dialog = model->get();
 +    const std::u16string name = std::u16string(base::TrimWhitespace(
 +        dialog->GetTextfieldByUniqueId(kWorkspaceNameFieldId)->text(),
@@ -1604,9 +2064,7 @@ index 000000000..e31bc1792
 +      workspace.name = name;
 +    }
 +    workspace.icon = icon->icon();
-+    workspace.color =
-+        colors->GetColorAt(dialog->GetComboboxByUniqueId(kWorkspaceColorFieldId)
-+                               ->selected_index());
++    workspace.theme = theme_picker->theme();
 +    controller_->UpdateWorkspace(workspace);
 +  }
 +
@@ -1615,6 +2073,7 @@ index 000000000..e31bc1792
 +  views::ViewTracker anchor_;
 +  std::unique_ptr<ui::SimpleMenuModel> model_;
 +  std::unique_ptr<views::MenuRunner> runner_;
++  bool editor_accepted_ = false;
 +  base::WeakPtrFactory<WorkspaceMenu> weak_factory_{this};
 +};
 +
@@ -1721,7 +2180,7 @@ index 000000000..e31bc1792
 +      chip->GetViewAccessibility().SetName(l10n_util::GetStringFUTF16(
 +          IDS_WORKSPACE_ITEM_ACCNAME, workspace.name));
 +      if (provider) {
-+        const SkColor color = WorkspaceColor(provider, workspace.color);
++        const SkColor color = WorkspaceColor(provider, workspace);
 +        const SkColor text = provider->GetColor(ui::kColorLabelForeground);
 +        if (is_active) {
 +          chip->SetBackground(views::CreateRoundedRectBackground(
@@ -1893,7 +2352,7 @@ index 000000000..e31bc1792
 +        l10n_util::GetStringFUTF16(IDS_WORKSPACE_ITEM_ACCNAME, active->name));
 +    SetTooltipText(active->name);
 +    if (const ui::ColorProvider* provider = GetColorProvider()) {
-+      const SkColor color = WorkspaceColor(provider, active->color);
++      const SkColor color = WorkspaceColor(provider, *active);
 +      SetBackground(views::CreateRoundedRectBackground(
 +          SkColorSetA(color, kHeaderAlpha), kCornerRadius));
 +      icon_->SetIconColor(ui::kColorLabelForeground);
@@ -1961,6 +2420,491 @@ index 000000000..1f9cf1cc8
 +}  // namespace workspaces
 +
 +#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_SWITCHER_VIEW_H_
+diff --git a/chrome/browser/ui/views/workspaces/workspace_theme_picker.cc b/chrome/browser/ui/views/workspaces/workspace_theme_picker.cc
+new file mode 100644
+index 000000000..f9cf0ba2b
+--- /dev/null
++++ b/chrome/browser/ui/views/workspaces/workspace_theme_picker.cc
+@@ -0,0 +1,395 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/workspaces/workspace_theme_picker.h"
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <memory>
++#include <optional>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/numerics/angle_conversions.h"
++#include "base/time/time.h"
++#include "cc/paint/paint_flags.h"
++#include "cc/paint/paint_shader.h"
++#include "chrome/grit/generated_resources.h"
++#include "components/vector_icons/vector_icons.h"
++#include "ui/accessibility/ax_enums.mojom.h"
++#include "ui/base/l10n/l10n_util.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/ui_base_types.h"
++#include "ui/events/event.h"
++#include "ui/gfx/canvas.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/point_f.h"
++#include "ui/gfx/geometry/size.h"
++#include "ui/gfx/geometry/vector2d_f.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/button/checkbox.h"
++#include "ui/views/controls/button/image_button.h"
++#include "ui/views/controls/button/image_button_factory.h"
++#include "ui/views/controls/button/md_text_button.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/layout/box_layout_view.h"
++#include "ui/views/layout/flex_layout_view.h"
++#include "ui/views/view_class_properties.h"
++
++namespace workspaces {
++
++namespace {
++
++constexpr int kWheelSize = 176;
++constexpr float kHandleRadius = 9.0f;
++constexpr float kGrabDistance = 18.0f;
++constexpr float kWheelValue = 0.95f;
++constexpr int kButtonIconSize = 16;
++constexpr base::TimeDelta kThrottle = base::Milliseconds(40);
++constexpr SkColor kDefaultColor = SkColorSetRGB(0x4C, 0x8D, 0xF6);
++
++constexpr auto kModes = std::to_array<std::pair<WorkspaceColorMode, int>>({
++    {WorkspaceColorMode::kSystem, IDS_WORKSPACE_THEME_MODE_SYSTEM},
++    {WorkspaceColorMode::kLight, IDS_WORKSPACE_THEME_MODE_LIGHT},
++    {WorkspaceColorMode::kDark, IDS_WORKSPACE_THEME_MODE_DARK},
++});
++
++// Returns `color` with its hue rotated by `degrees`.
++SkColor RotateHue(SkColor color, float degrees) {
++  SkScalar hsv[3];
++  SkColorToHSV(color, hsv);
++  hsv[0] = std::fmod(hsv[0] + degrees, 360.0f);
++  return SkHSVToColor(hsv);
++}
++
++}  // namespace
++
++// A hue and saturation wheel with one draggable point per theme color.
++class WorkspaceThemePicker::ColorWheel : public views::View {
++  METADATA_HEADER(ColorWheel, views::View)
++
++ public:
++  using ColorsCallback =
++      base::RepeatingCallback<void(std::vector<SkColor>, bool final)>;
++
++  explicit ColorWheel(ColorsCallback callback)
++      : callback_(std::move(callback)) {
++    SetPreferredSize(gfx::Size(kWheelSize, kWheelSize));
++    GetViewAccessibility().SetRole(ax::mojom::Role::kGroup);
++    GetViewAccessibility().SetName(
++        l10n_util::GetStringUTF16(IDS_WORKSPACE_THEME_LABEL));
++  }
++  ColorWheel(const ColorWheel&) = delete;
++  ColorWheel& operator=(const ColorWheel&) = delete;
++  ~ColorWheel() override = default;
++
++  void SetColors(const std::vector<SkColor>& colors) {
++    colors_ = colors;
++    SchedulePaint();
++  }
++
++  // views::View:
++  void OnPaint(gfx::Canvas* canvas) override {
++    const gfx::PointF center = Center();
++    const float radius = Radius();
++
++    std::vector<SkColor4f> hues;
++    for (int hue = 0; hue <= 360; hue += 30) {
++      const SkScalar hsv[3] = {static_cast<SkScalar>(hue % 360), 1.0f,
++                               kWheelValue};
++      hues.push_back(SkColor4f::FromColor(SkHSVToColor(hsv)));
++    }
++    cc::PaintFlags wheel;
++    wheel.setAntiAlias(true);
++    wheel.setShader(cc::PaintShader::MakeSweepGradient(
++        center.x(), center.y(), hues.data(), nullptr,
++        static_cast<int>(hues.size()),
++        SkTileMode::kClamp, 0, 360));
++    canvas->DrawCircle(center, radius, wheel);
++
++    const SkColor4f white =
++        SkColor4f::FromColor(SkColorSetRGB(0xF2, 0xF2, 0xF2));
++    SkColor4f faded = white;
++    faded.fA = 0;
++    const SkColor4f radial[] = {white, faded};
++    cc::PaintFlags fade;
++    fade.setAntiAlias(true);
++    fade.setShader(cc::PaintShader::MakeRadialGradient(
++        SkPoint::Make(center.x(), center.y()), radius, radial, nullptr, 2,
++        SkTileMode::kClamp));
++    canvas->DrawCircle(center, radius, fade);
++
++    for (size_t i = 0; i < colors_.size(); ++i) {
++      const gfx::PointF point = PointOf(colors_[i]);
++      cc::PaintFlags flags;
++      flags.setAntiAlias(true);
++      flags.setColor(SkColorSetA(SK_ColorBLACK, 0x40));
++      canvas->DrawCircle(point, kHandleRadius + 1.5f, flags);
++      flags.setColor(SK_ColorWHITE);
++      canvas->DrawCircle(point, kHandleRadius, flags);
++      flags.setColor(colors_[i]);
++      canvas->DrawCircle(point, kHandleRadius - (i == 0 ? 2.0f : 3.0f), flags);
++    }
++  }
++
++  bool OnMousePressed(const ui::MouseEvent& event) override {
++    if (!event.IsOnlyLeftMouseButton()) {
++      return false;
++    }
++    const gfx::PointF location = event.location_f();
++    dragged_ = Nearest(location);
++    if (!dragged_) {
++      if (colors_.empty()) {
++        colors_.push_back(kDefaultColor);
++        dragged_ = 0;
++      } else {
++        dragged_ = NearestAny(location);
++      }
++    }
++    MoveDragged(location, false);
++    return true;
++  }
++
++  bool OnMouseDragged(const ui::MouseEvent& event) override {
++    MoveDragged(event.location_f(), false);
++    return true;
++  }
++
++  void OnMouseReleased(const ui::MouseEvent& event) override {
++    MoveDragged(event.location_f(), true);
++    dragged_.reset();
++  }
++
++  void OnMouseCaptureLost() override {
++    if (dragged_) {
++      callback_.Run(colors_, true);
++    }
++    dragged_.reset();
++  }
++
++ private:
++  gfx::PointF Center() const {
++    return gfx::PointF(width() / 2.0f, height() / 2.0f);
++  }
++
++  float Radius() const {
++    return std::min(width(), height()) / 2.0f - kHandleRadius - 2;
++  }
++
++  gfx::PointF PointOf(SkColor color) const {
++    SkScalar hsv[3];
++    SkColorToHSV(color, hsv);
++    const double angle = base::DegToRad(static_cast<double>(hsv[0]));
++    const float distance = hsv[1] * Radius();
++    return Center() + gfx::Vector2dF(distance * std::cos(angle),
++                                     distance * std::sin(angle));
++  }
++
++  // Returns the point within grab distance of `location`.
++  std::optional<size_t> Nearest(const gfx::PointF& location) const {
++    std::optional<size_t> nearest = NearestAny(location);
++    if (nearest && (PointOf(colors_[*nearest]) - location).Length() >
++                       kGrabDistance) {
++      return std::nullopt;
++    }
++    return nearest;
++  }
++
++  std::optional<size_t> NearestAny(const gfx::PointF& location) const {
++    std::optional<size_t> nearest;
++    float best = 0;
++    for (size_t i = 0; i < colors_.size(); ++i) {
++      const float distance = (PointOf(colors_[i]) - location).Length();
++      if (!nearest || distance < best) {
++        nearest = i;
++        best = distance;
++      }
++    }
++    return nearest;
++  }
++
++  void MoveDragged(const gfx::PointF& location, bool final) {
++    if (!dragged_ || *dragged_ >= colors_.size()) {
++      return;
++    }
++    const gfx::Vector2dF offset = location - Center();
++    float hue = base::RadToDeg(std::atan2(offset.y(), offset.x()));
++    if (hue < 0) {
++      hue += 360;
++    }
++    const float saturation = std::clamp(offset.Length() / Radius(), 0.0f, 1.0f);
++    const SkScalar hsv[3] = {hue, saturation, kWheelValue};
++    colors_[*dragged_] = SkHSVToColor(hsv);
++    SchedulePaint();
++    callback_.Run(colors_, final);
++  }
++
++  ColorsCallback callback_;
++  std::vector<SkColor> colors_;
++  std::optional<size_t> dragged_;
++};
++
++BEGIN_METADATA(WorkspaceThemePicker, ColorWheel)
++END_METADATA
++
++WorkspaceThemePicker::WorkspaceThemePicker(const WorkspaceTheme& theme,
++                                           ChangedCallback callback)
++    : theme_(theme), callback_(std::move(callback)) {
++  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 8));
++  layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kStretch);
++
++  auto wheel_row = std::make_unique<views::BoxLayoutView>();
++  wheel_row->SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kCenter);
++  wheel_ = wheel_row->AddChildView(std::make_unique<ColorWheel>(
++      base::BindRepeating(&WorkspaceThemePicker::SetColors,
++                          base::Unretained(this))));
++  AddChildView(std::move(wheel_row));
++
++  auto buttons = std::make_unique<views::BoxLayoutView>();
++  buttons->SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kCenter);
++  buttons->SetCrossAxisAlignment(
++      views::BoxLayout::CrossAxisAlignment::kCenter);
++  buttons->SetBetweenChildSpacing(4);
++  const auto add_icon_button = [&](const gfx::VectorIcon& icon, int label,
++                                   void (WorkspaceThemePicker::*method)()) {
++    auto button = views::CreateVectorImageButtonWithNativeTheme(
++        base::BindRepeating(method, base::Unretained(this)), icon,
++        kButtonIconSize);
++    button->SetTooltipText(l10n_util::GetStringUTF16(label));
++    button->GetViewAccessibility().SetName(l10n_util::GetStringUTF16(label));
++    return buttons->AddChildView(std::move(button));
++  };
++  remove_button_ = add_icon_button(vector_icons::kCloseIcon,
++                                   IDS_WORKSPACE_THEME_REMOVE_COLOR,
++                                   &WorkspaceThemePicker::RemoveColor);
++  add_button_ =
++      add_icon_button(vector_icons::kAdd2Icon, IDS_WORKSPACE_THEME_ADD_COLOR,
++                      &WorkspaceThemePicker::AddColor);
++  for (size_t i = 0; i < kModes.size(); ++i) {
++    mode_buttons_[i] = buttons->AddChildView(std::make_unique<views::MdTextButton>(
++        base::BindRepeating(&WorkspaceThemePicker::SetMode,
++                            base::Unretained(this), kModes[i].first),
++        l10n_util::GetStringUTF16(kModes[i].second)));
++  }
++  AddChildView(std::move(buttons));
++
++  auto intensity_row = std::make_unique<views::BoxLayoutView>();
++  intensity_row->SetCrossAxisAlignment(
++      views::BoxLayout::CrossAxisAlignment::kCenter);
++  intensity_row->SetBetweenChildSpacing(8);
++  const std::u16string intensity_label =
++      l10n_util::GetStringUTF16(IDS_WORKSPACE_THEME_INTENSITY);
++  intensity_row->AddChildView(std::make_unique<views::Label>(intensity_label));
++  intensity_ =
++      intensity_row->AddChildView(std::make_unique<views::Slider>(this));
++  intensity_->SetValue(theme_.intensity);
++  intensity_->GetViewAccessibility().SetName(intensity_label);
++  intensity_row->SetFlexForView(intensity_, 1);
++  AddChildView(std::move(intensity_row));
++
++  grain_ = AddChildView(std::make_unique<views::Checkbox>(
++      l10n_util::GetStringUTF16(IDS_WORKSPACE_THEME_GRAIN),
++      base::BindRepeating(&WorkspaceThemePicker::ToggleGrain,
++                          base::Unretained(this))));
++  grain_->SetChecked(theme_.grain);
++
++  UpdateControls();
++}
++
++WorkspaceThemePicker::~WorkspaceThemePicker() = default;
++
++void WorkspaceThemePicker::SliderValueChanged(
++    views::Slider* sender,
++    float value,
++    float old_value,
++    views::SliderChangeReason reason) {
++  if (reason != views::SliderChangeReason::kByUser) {
++    return;
++  }
++  theme_.intensity = value;
++  NotifyChanged(false);
++}
++
++void WorkspaceThemePicker::SliderDragEnded(views::Slider* sender) {
++  NotifyChanged(true);
++}
++
++void WorkspaceThemePicker::SetColors(std::vector<SkColor> colors, bool final) {
++  const bool count_changed = colors.size() != theme_.colors.size();
++  theme_.colors = std::move(colors);
++  if (count_changed) {
++    UpdateControls();
++  }
++  NotifyChanged(final);
++}
++
++void WorkspaceThemePicker::AddColor() {
++  if (theme_.colors.size() >= kMaxThemeColors) {
++    return;
++  }
++  theme_.colors.push_back(
++      theme_.colors.empty()
++          ? kDefaultColor
++          : RotateHue(theme_.colors.front(), 120.0f * theme_.colors.size()));
++  UpdateControls();
++  NotifyChanged(true);
++}
++
++void WorkspaceThemePicker::RemoveColor() {
++  if (theme_.colors.empty()) {
++    return;
++  }
++  theme_.colors.pop_back();
++  UpdateControls();
++  NotifyChanged(true);
++}
++
++void WorkspaceThemePicker::SetMode(WorkspaceColorMode mode) {
++  theme_.mode = mode;
++  UpdateControls();
++  NotifyChanged(true);
++}
++
++void WorkspaceThemePicker::ToggleGrain() {
++  theme_.grain = grain_->GetChecked();
++  NotifyChanged(true);
++}
++
++void WorkspaceThemePicker::UpdateControls() {
++  wheel_->SetColors(theme_.colors);
++  add_button_->SetEnabled(theme_.colors.size() < kMaxThemeColors);
++  remove_button_->SetEnabled(!theme_.colors.empty());
++  const bool has_colors = !theme_.colors.empty();
++  for (size_t i = 0; i < kModes.size(); ++i) {
++    mode_buttons_[i]->SetStyle(kModes[i].first == theme_.mode
++                                   ? ui::ButtonStyle::kTonal
++                                   : ui::ButtonStyle::kText);
++    mode_buttons_[i]->SetEnabled(has_colors);
++  }
++  intensity_->SetEnabled(has_colors);
++  grain_->SetEnabled(has_colors);
++}
++
++void WorkspaceThemePicker::NotifyChanged(bool final) {
++  if (final) {
++    throttle_.Stop();
++    RunCallback();
++  } else if (!throttle_.IsRunning()) {
++    throttle_.Start(FROM_HERE, kThrottle,
++                    base::BindOnce(&WorkspaceThemePicker::RunCallback,
++                                   base::Unretained(this)));
++  }
++}
++
++void WorkspaceThemePicker::RunCallback() {
++  callback_.Run(theme_);
++}
++
++BEGIN_METADATA(WorkspaceThemePicker)
++END_METADATA
++
++}  // namespace workspaces
+diff --git a/chrome/browser/ui/views/workspaces/workspace_theme_picker.h b/chrome/browser/ui/views/workspaces/workspace_theme_picker.h
+new file mode 100644
+index 000000000..cede24320
+--- /dev/null
++++ b/chrome/browser/ui/views/workspaces/workspace_theme_picker.h
+@@ -0,0 +1,78 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_THEME_PICKER_H_
++#define CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_THEME_PICKER_H_
++
++#include <array>
++#include <vector>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/timer/timer.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/controls/slider.h"
++#include "ui/views/view.h"
++
++namespace views {
++class Checkbox;
++class ImageButton;
++class MdTextButton;
++}  // namespace views
++
++namespace workspaces {
++
++// Edits a workspace theme: a color wheel with up to `kMaxThemeColors`
++// draggable points, the color mode, the intensity and the grain. Reports every
++// change, throttled while dragging, so the browser can preview it live.
++class WorkspaceThemePicker : public views::View, public views::SliderListener {
++  METADATA_HEADER(WorkspaceThemePicker, views::View)
++
++ public:
++  using ChangedCallback = base::RepeatingCallback<void(const WorkspaceTheme&)>;
++
++  WorkspaceThemePicker(const WorkspaceTheme& theme, ChangedCallback callback);
++  WorkspaceThemePicker(const WorkspaceThemePicker&) = delete;
++  WorkspaceThemePicker& operator=(const WorkspaceThemePicker&) = delete;
++  ~WorkspaceThemePicker() override;
++
++  const WorkspaceTheme& theme() const { return theme_; }
++
++  // views::SliderListener:
++  void SliderValueChanged(views::Slider* sender,
++                          float value,
++                          float old_value,
++                          views::SliderChangeReason reason) override;
++  void SliderDragEnded(views::Slider* sender) override;
++
++ private:
++  class ColorWheel;
++
++  void SetColors(std::vector<SkColor> colors, bool final);
++  void AddColor();
++  void RemoveColor();
++  void SetMode(WorkspaceColorMode mode);
++  void ToggleGrain();
++  void UpdateControls();
++  // Reports the theme now if `final`, otherwise at most once per throttle
++  // interval.
++  void NotifyChanged(bool final);
++  void RunCallback();
++
++  WorkspaceTheme theme_;
++  ChangedCallback callback_;
++  base::OneShotTimer throttle_;
++  raw_ptr<ColorWheel> wheel_ = nullptr;
++  raw_ptr<views::ImageButton> add_button_ = nullptr;
++  raw_ptr<views::ImageButton> remove_button_ = nullptr;
++  std::array<raw_ptr<views::MdTextButton>, 3> mode_buttons_;
++  raw_ptr<views::Slider> intensity_ = nullptr;
++  raw_ptr<views::Checkbox> grain_ = nullptr;
++};
++
++}  // namespace workspaces
++
++#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_THEME_PICKER_H_
 diff --git a/chrome/browser/ui/views/workspaces/workspace_vector_icons.h b/chrome/browser/ui/views/workspaces/workspace_vector_icons.h
 new file mode 100644
 index 000000000..5448bb06e
