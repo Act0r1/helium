@@ -773,10 +773,10 @@ index 47f4f372e..874fa65c7 100644
    registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.cc b/chrome/browser/ui/workspaces/workspace_controller.cc
 new file mode 100644
-index 000000000..e48bb230c
+index 000000000..dea096d92
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.cc
-@@ -0,0 +1,732 @@
+@@ -0,0 +1,736 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1065,8 +1065,12 @@ index 000000000..e48bb230c
 +
 +const WorkspaceTheme* WorkspaceController::GetShownTheme() const {
 +  const Workspace* active = GetActiveWorkspace();
-+  return active && !active->theme.colors.empty() && IsFilteringTabs()
-+             ? &active->theme
++  if (!active || !IsFilteringTabs()) {
++    return nullptr;
++  }
++  const WorkspaceTheme& theme = active->theme;
++  return !theme.colors.empty() || theme.mode != WorkspaceColorMode::kSystem
++             ? &theme
 +             : nullptr;
 +}
 +
@@ -1511,7 +1515,7 @@ index 000000000..e48bb230c
 +}  // namespace workspaces
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.h b/chrome/browser/ui/workspaces/workspace_controller.h
 new file mode 100644
-index 000000000..5c18a4e1b
+index 000000000..a72deb345
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.h
 @@ -0,0 +1,191 @@
@@ -1618,7 +1622,7 @@ index 000000000..5c18a4e1b
 +  const std::vector<Workspace>& GetWorkspaces() const { return workspaces_; }
 +  const Workspace* GetActiveWorkspace() const;
 +  // Returns the theme of the active workspace while workspaces are shown and
-+  // the theme has colors, nullptr otherwise.
++  // the theme has colors or forces a color mode, nullptr otherwise.
 +  const WorkspaceTheme* GetShownTheme() const;
 +  // Returns nullptr for Essentials.
 +  const Workspace* GetWorkspaceOf(const tabs::TabInterface* tab) const;
@@ -1708,10 +1712,10 @@ index 000000000..5c18a4e1b
 +#endif  // CHROME_BROWSER_UI_WORKSPACES_WORKSPACE_CONTROLLER_H_
 diff --git a/chrome/browser/ui/workspaces/workspace_controller_unittest.cc b/chrome/browser/ui/workspaces/workspace_controller_unittest.cc
 new file mode 100644
-index 000000000..a441db91b
+index 000000000..9d6266972
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller_unittest.cc
-@@ -0,0 +1,319 @@
+@@ -0,0 +1,331 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1982,6 +1986,18 @@ index 000000000..a441db91b
 +  ASSERT_NE(nullptr, controller()->GetShownTheme());
 +  EXPECT_EQ(controller()->GetActiveWorkspace()->theme,
 +            *controller()->GetShownTheme());
++}
++
++TEST_F(WorkspaceControllerTest, ThemeIsShownWithColorModeOnly) {
++  EnableVerticalTabs();
++  Workspace workspace = *controller()->GetActiveWorkspace();
++  workspace.theme = WorkspaceTheme();
++  controller()->UpdateWorkspace(workspace);
++  EXPECT_EQ(nullptr, controller()->GetShownTheme());
++  workspace.theme.mode = WorkspaceColorMode::kDark;
++  controller()->UpdateWorkspace(workspace);
++  ASSERT_NE(nullptr, controller()->GetShownTheme());
++  EXPECT_TRUE(controller()->GetShownTheme()->colors.empty());
 +}
 +
 +TEST_F(WorkspaceControllerTest, MergeRestoredWorkspacesAddsMissing) {

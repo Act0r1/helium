@@ -169,7 +169,7 @@ index c91e80277..d19f92410 100644
    raw_ptr<WebAppFrameToolbarView> web_app_frame_toolbar_ = nullptr;
  
 diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
-index 3ba0091e4..548e6fee0 100644
+index 3ba0091e4..605f2a92e 100644
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
 @@ -10,6 +10,7 @@
@@ -207,7 +207,7 @@ index 3ba0091e4..548e6fee0 100644
  #include "ui/views/controls/menu/menu_runner.h"
  #include "ui/views/input_protection/widget_stationarity_monitor.h"
  #include "ui/views/widget/native_widget.h"
-@@ -66,6 +74,65 @@
+@@ -66,6 +74,70 @@
  #endif
  namespace {
  
@@ -238,13 +238,28 @@ index 3ba0091e4..548e6fee0 100644
 +};
 +
 +// Lets the theme of the active workspace replace the profile theme. Returns
-+// whether a workspace theme is applied.
++// whether workspace colors are applied.
 +bool ApplyWorkspaceTheme(BrowserWindowInterface* browser,
 +                         ui::ColorProviderKey& key) {
 +  const auto* controller = workspaces::WorkspaceController::From(browser);
 +  const workspaces::WorkspaceTheme* theme =
 +      controller ? controller->GetShownTheme() : nullptr;
 +  if (!theme) {
++    return false;
++  }
++  switch (theme->mode) {
++    case workspaces::WorkspaceColorMode::kSystem:
++      break;
++    case workspaces::WorkspaceColorMode::kLight:
++      key.color_mode = ui::ColorProviderKey::ColorMode::kLight;
++      key.system_theme = ui::SystemTheme::kDefault;
++      break;
++    case workspaces::WorkspaceColorMode::kDark:
++      key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
++      key.system_theme = ui::SystemTheme::kDefault;
++      break;
++  }
++  if (theme->colors.empty()) {
 +    return false;
 +  }
 +  key.user_color = theme->colors.front();
@@ -257,23 +272,13 @@ index 3ba0091e4..548e6fee0 100644
 +                 : ui::ColorProviderKey::SchemeVariant::kVibrant);
 +  key.custom_theme = nullptr;
 +  key.system_theme = ui::SystemTheme::kDefault;
-+  switch (theme->mode) {
-+    case workspaces::WorkspaceColorMode::kSystem:
-+      break;
-+    case workspaces::WorkspaceColorMode::kLight:
-+      key.color_mode = ui::ColorProviderKey::ColorMode::kLight;
-+      break;
-+    case workspaces::WorkspaceColorMode::kDark:
-+      key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
-+      break;
-+  }
 +  return true;
 +}
 +
  // Helper to track whether a ThemeChange event has been received by the widget.
  class ThemeChangedObserver : public views::WidgetObserver {
   public:
-@@ -492,6 +559,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -492,6 +564,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
  
    key = theme_service->GetColorProviderKey(key, profile);
    key.custom_theme = GetCustomTheme();
@@ -282,7 +287,7 @@ index 3ba0091e4..548e6fee0 100644
  
    // Re-apply Widget overrides because GetColorProviderKey might have
    // overwritten them.
-@@ -506,6 +575,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -506,6 +580,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
    // Apply BrowserWidget overrides:
    key.app_controller =
        web_app::AppBrowserController::From(browser_view_->browser());
@@ -2694,10 +2699,10 @@ index 000000000..1f9cf1cc8
 +#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_SWITCHER_VIEW_H_
 diff --git a/chrome/browser/ui/views/workspaces/workspace_theme_picker.cc b/chrome/browser/ui/views/workspaces/workspace_theme_picker.cc
 new file mode 100644
-index 000000000..f9cf0ba2b
+index 000000000..95f9c24ab
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_theme_picker.cc
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,394 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -3068,7 +3073,6 @@ index 000000000..f9cf0ba2b
 +    mode_buttons_[i]->SetStyle(kModes[i].first == theme_.mode
 +                                   ? ui::ButtonStyle::kTonal
 +                                   : ui::ButtonStyle::kText);
-+    mode_buttons_[i]->SetEnabled(has_colors);
 +  }
 +  intensity_->SetEnabled(has_colors);
 +  grain_->SetEnabled(has_colors);
