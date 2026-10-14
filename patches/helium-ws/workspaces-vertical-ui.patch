@@ -169,7 +169,7 @@ index c91e80277..d19f92410 100644
    raw_ptr<WebAppFrameToolbarView> web_app_frame_toolbar_ = nullptr;
  
 diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
-index 3ba0091e4..88eee2e2c 100644
+index 3ba0091e4..548e6fee0 100644
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
 @@ -10,6 +10,7 @@
@@ -207,12 +207,13 @@ index 3ba0091e4..88eee2e2c 100644
  #include "ui/views/controls/menu/menu_runner.h"
  #include "ui/views/input_protection/widget_stationarity_monitor.h"
  #include "ui/views/widget/native_widget.h"
-@@ -66,6 +74,62 @@
+@@ -66,6 +74,65 @@
  #endif
  namespace {
  
 +// Lets the location bar take the tone of the workspace theme gradient painted
-+// behind the browser chrome, and the new tab page show it through.
++// behind the browser chrome, and the new tab page show it through with tinted
++// shortcut tiles.
 +class WorkspaceColorMixers : public ui::ColorProviderKey::InitializerSupplier {
 + public:
 +  static WorkspaceColorMixers* Get() {
@@ -231,6 +232,8 @@ index 3ba0091e4..88eee2e2c 100644
 +    mixer[kColorLocationBarBackgroundHovered] =
 +        ui::SetAlpha({ui::kColorSysOnSurface}, 0x1F);
 +    mixer[kColorNewTabPageBackground] = {SK_ColorTRANSPARENT};
++    mixer[kColorNewTabPageMostVisitedTileBackground] =
++        ui::SetAlpha({ui::kColorSysPrimaryContainer}, 0x99);
 +  }
 +};
 +
@@ -270,7 +273,7 @@ index 3ba0091e4..88eee2e2c 100644
  // Helper to track whether a ThemeChange event has been received by the widget.
  class ThemeChangedObserver : public views::WidgetObserver {
   public:
-@@ -492,6 +556,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -492,6 +559,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
  
    key = theme_service->GetColorProviderKey(key, profile);
    key.custom_theme = GetCustomTheme();
@@ -279,7 +282,7 @@ index 3ba0091e4..88eee2e2c 100644
  
    // Re-apply Widget overrides because GetColorProviderKey might have
    // overwritten them.
-@@ -506,6 +572,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -506,6 +575,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
    // Apply BrowserWidget overrides:
    key.app_controller =
        web_app::AppBrowserController::From(browser_view_->browser());
