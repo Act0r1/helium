@@ -169,7 +169,7 @@ index c91e80277..d19f92410 100644
    raw_ptr<WebAppFrameToolbarView> web_app_frame_toolbar_ = nullptr;
  
 diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
-index 3ba0091e4..dffcbb17b 100644
+index 3ba0091e4..88eee2e2c 100644
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
 @@ -10,6 +10,7 @@
@@ -207,12 +207,12 @@ index 3ba0091e4..dffcbb17b 100644
  #include "ui/views/controls/menu/menu_runner.h"
  #include "ui/views/input_protection/widget_stationarity_monitor.h"
  #include "ui/views/widget/native_widget.h"
-@@ -66,6 +74,63 @@
+@@ -66,6 +74,62 @@
  #endif
  namespace {
  
-+// Lets the location bar and the new tab page take the tone of the workspace
-+// theme gradient painted behind the browser chrome.
++// Lets the location bar take the tone of the workspace theme gradient painted
++// behind the browser chrome, and the new tab page show it through.
 +class WorkspaceColorMixers : public ui::ColorProviderKey::InitializerSupplier {
 + public:
 +  static WorkspaceColorMixers* Get() {
@@ -230,8 +230,7 @@ index 3ba0091e4..dffcbb17b 100644
 +        ui::SetAlpha({ui::kColorSysOnSurface}, 0x14);
 +    mixer[kColorLocationBarBackgroundHovered] =
 +        ui::SetAlpha({ui::kColorSysOnSurface}, 0x1F);
-+    mixer[kColorNewTabPageBackground] =
-+        ui::AlphaBlend({ui::kColorSysPrimary}, {ui::kColorSysBase}, 0x26);
++    mixer[kColorNewTabPageBackground] = {SK_ColorTRANSPARENT};
 +  }
 +};
 +
@@ -271,7 +270,7 @@ index 3ba0091e4..dffcbb17b 100644
  // Helper to track whether a ThemeChange event has been received by the widget.
  class ThemeChangedObserver : public views::WidgetObserver {
   public:
-@@ -492,6 +557,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -492,6 +556,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
  
    key = theme_service->GetColorProviderKey(key, profile);
    key.custom_theme = GetCustomTheme();
@@ -280,7 +279,7 @@ index 3ba0091e4..dffcbb17b 100644
  
    // Re-apply Widget overrides because GetColorProviderKey might have
    // overwritten them.
-@@ -506,6 +573,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -506,6 +572,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
    // Apply BrowserWidget overrides:
    key.app_controller =
        web_app::AppBrowserController::From(browser_view_->browser());
@@ -290,6 +289,115 @@ index 3ba0091e4..dffcbb17b 100644
  
  #if BUILDFLAG(IS_CHROMEOS)
    // ChromeOS SystemWebApps use the OS theme all the time.
+diff --git a/chrome/browser/ui/views/frame/contents_web_view.cc b/chrome/browser/ui/views/frame/contents_web_view.cc
+index 8f29bb429..675be93c4 100644
+--- a/chrome/browser/ui/views/frame/contents_web_view.cc
++++ b/chrome/browser/ui/views/frame/contents_web_view.cc
+@@ -7,13 +7,17 @@
+ #include "base/debug/dump_without_crashing.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
+ #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
+ #include "chrome/browser/ui/views/status_bubble_views.h"
++#include "chrome/browser/ui/views/workspaces/workspace_background.h"
++#include "chrome/common/webui_url_constants.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "components/web_modal/web_contents_modal_dialog_manager.h"
+ #include "content/public/browser/render_widget_host_view.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/common/url_constants.h"
+ #include "third_party/blink/public/common/input/web_input_event.h"
+ #include "third_party/skia/include/core/SkColor.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -156,6 +160,9 @@ void ContentsWebView::SetWebContents(content::WebContents* web_contents) {
+   }
+ 
+   UpdateIsBlockedByModal();
++  if (GetWidget()) {
++    UpdateBackgroundColor();
++  }
+ 
+   if (!status_bubble_) {
+     status_bubble_ = std::make_unique<StatusBubbleViews>(this);
+@@ -185,7 +192,31 @@ void ContentsWebView::DidGetUserInteraction(const blink::WebInputEvent& event) {
+ }
+ #endif
+ 
++bool ContentsWebView::ShowsWorkspaceTheme() const {
++  if (!web_contents() || !GetWidget()) {
++    return false;
++  }
++  const GURL& url = web_contents()->GetLastCommittedURL();
++  if (!url.SchemeIs(content::kChromeUIScheme) ||
++      (url.host() != chrome::kChromeUINewTabPageHost &&
++       url.host() != chrome::kChromeUINewTabHost)) {
++    return false;
++  }
++  BrowserView* browser_view = BrowserView::GetBrowserViewForNativeWindow(
++      GetWidget()->GetTopLevelWidget()->GetNativeWindow());
++  return browser_view && browser_view->workspace_background() &&
++         browser_view->workspace_background()->IsThemeShown();
++}
++
++void ContentsWebView::PrimaryPageChanged(content::Page& page) {
++  views::WebView::PrimaryPageChanged(page);
++  if (GetWidget()) {
++    UpdateBackgroundColor();
++  }
++}
++
+ void ContentsWebView::UpdateBackgroundColor() {
++  const bool background_visible = background_visible_ && !ShowsWorkspaceTheme();
+   const SkColor color = GetColorProvider()->GetColor(
+       is_letterboxing() ? kColorWebContentsBackgroundLetterboxing
+                         : kColorWebContentsBackground);
+@@ -194,19 +225,19 @@ void ContentsWebView::UpdateBackgroundColor() {
+   // TODO(crbug.com/456309057): Update this to be a CHECK.
+   if (SkColorGetA(color) != SK_AlphaOPAQUE) {
+     base::debug::DumpWithoutCrashing();
+-    if (background_visible_) {
++    if (background_visible) {
+       return;
+     }
+   }
+ 
+   auto* background_layer = layer()->AsSolidColor();
+   background_layer->SetColor(
+-      SkColor4f::FromColor(background_visible_ ? color : SK_ColorTRANSPARENT));
++      SkColor4f::FromColor(background_visible ? color : SK_ColorTRANSPARENT));
+ 
+   SafeInvoke(web_contents())
+       .Then(&content::WebContents::GetRenderWidgetHostView)
+       .Then(&content::RenderWidgetHostView::SetBackgroundColor,
+-            background_visible_ ? color : SK_ColorTRANSPARENT);
++            background_visible ? color : SK_ColorTRANSPARENT);
+ }
+ 
+ std::unique_ptr<ui::Layer> ContentsWebView::RecreateLayer() {
+diff --git a/chrome/browser/ui/views/frame/contents_web_view.h b/chrome/browser/ui/views/frame/contents_web_view.h
+index dba4f324e..1ee9ea5d4 100644
+--- a/chrome/browser/ui/views/frame/contents_web_view.h
++++ b/chrome/browser/ui/views/frame/contents_web_view.h
+@@ -62,6 +62,7 @@ class ContentsWebView : public views::WebView,
+   void RenderViewReady() override;
+   void OnLetterboxingChanged() override;
+   void SetWebContents(content::WebContents* web_contents) override;
++  void PrimaryPageChanged(content::Page& page) override;
+ 
+   // content::WebContentsObserver overrides:
+   // Overridden to track physical interactions (mouse/touch) on the WebContents.
+@@ -80,6 +81,9 @@ class ContentsWebView : public views::WebView,
+   void DestroyClonedLayer() override;
+ 
+  private:
++  // Whether the new tab page should show the workspace theme through a
++  // transparent background.
++  bool ShowsWorkspaceTheme() const;
+   void UpdateBackgroundColor();
+   std::unique_ptr<StatusBubbleViews> status_bubble_;
+   std::unique_ptr<WebContentsCloseHandler> web_contents_close_handler_;
 diff --git a/chrome/browser/ui/views/frame/multi_contents_background_view.cc b/chrome/browser/ui/views/frame/multi_contents_background_view.cc
 index 90bb0568b..03cb1c04a 100644
 --- a/chrome/browser/ui/views/frame/multi_contents_background_view.cc
