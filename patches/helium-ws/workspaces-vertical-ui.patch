@@ -169,10 +169,26 @@ index c91e80277..d19f92410 100644
    raw_ptr<WebAppFrameToolbarView> web_app_frame_toolbar_ = nullptr;
  
 diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
-index 3ba0091e4..61c5a7852 100644
+index 3ba0091e4..dffcbb17b 100644
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
-@@ -35,6 +35,7 @@
+@@ -10,6 +10,7 @@
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/metrics/user_metrics.h"
++#include "base/no_destructor.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/app_mode/app_mode_utils.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -21,6 +22,7 @@
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window_state.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
+ #include "chrome/browser/ui/sessions/session_service_browser_helper.h"
+@@ -35,12 +37,18 @@
  #include "chrome/browser/ui/views/frame/top_container_view.h"
  #include "chrome/browser/ui/views/helium/native_frame_materials.h"
  #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -180,18 +196,54 @@ index 3ba0091e4..61c5a7852 100644
  #include "chrome/common/chrome_switches.h"
  #include "ui/base/hit_test.h"
  #include "ui/base/mojom/menu_source_type.mojom-forward.h"
-@@ -66,6 +67,37 @@
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/base/ui_base_features.h"
++#include "ui/color/color_id.h"
++#include "ui/color/color_mixer.h"
++#include "ui/color/color_provider.h"
+ #include "ui/color/color_provider_key.h"
++#include "ui/color/color_recipe.h"
++#include "ui/color/color_transform.h"
+ #include "ui/views/controls/menu/menu_runner.h"
+ #include "ui/views/input_protection/widget_stationarity_monitor.h"
+ #include "ui/views/widget/native_widget.h"
+@@ -66,6 +74,63 @@
  #endif
  namespace {
  
-+// Lets the theme of the active workspace replace the profile theme.
-+void ApplyWorkspaceTheme(BrowserWindowInterface* browser,
++// Lets the location bar and the new tab page take the tone of the workspace
++// theme gradient painted behind the browser chrome.
++class WorkspaceColorMixers : public ui::ColorProviderKey::InitializerSupplier {
++ public:
++  static WorkspaceColorMixers* Get() {
++    static base::NoDestructor<WorkspaceColorMixers> instance;
++    return instance.get();
++  }
++
++  ~WorkspaceColorMixers() override = default;
++
++  // ui::ColorProviderKey::InitializerSupplier:
++  void AddColorMixers(ui::ColorProvider* provider,
++                      const ui::ColorProviderKey& key) const override {
++    ui::ColorMixer& mixer = provider->AddMixer();
++    mixer[kColorLocationBarBackground] =
++        ui::SetAlpha({ui::kColorSysOnSurface}, 0x14);
++    mixer[kColorLocationBarBackgroundHovered] =
++        ui::SetAlpha({ui::kColorSysOnSurface}, 0x1F);
++    mixer[kColorNewTabPageBackground] =
++        ui::AlphaBlend({ui::kColorSysPrimary}, {ui::kColorSysBase}, 0x26);
++  }
++};
++
++// Lets the theme of the active workspace replace the profile theme. Returns
++// whether a workspace theme is applied.
++bool ApplyWorkspaceTheme(BrowserWindowInterface* browser,
 +                         ui::ColorProviderKey& key) {
 +  const auto* controller = workspaces::WorkspaceController::From(browser);
 +  const workspaces::WorkspaceTheme* theme =
 +      controller ? controller->GetShownTheme() : nullptr;
 +  if (!theme) {
-+    return;
++    return false;
 +  }
 +  key.user_color = theme->colors.front();
 +  key.user_color_source = ui::ColorProviderKey::UserColorSource::kAccent;
@@ -213,19 +265,119 @@ index 3ba0091e4..61c5a7852 100644
 +      key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
 +      break;
 +  }
++  return true;
 +}
 +
  // Helper to track whether a ThemeChange event has been received by the widget.
  class ThemeChangedObserver : public views::WidgetObserver {
   public:
-@@ -492,6 +524,7 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -492,6 +557,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
  
    key = theme_service->GetColorProviderKey(key, profile);
    key.custom_theme = GetCustomTheme();
-+  ApplyWorkspaceTheme(browser_view_->browser(), key);
++  const bool has_workspace_theme =
++      ApplyWorkspaceTheme(browser_view_->browser(), key);
  
    // Re-apply Widget overrides because GetColorProviderKey might have
    // overwritten them.
+@@ -506,6 +573,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+   // Apply BrowserWidget overrides:
+   key.app_controller =
+       web_app::AppBrowserController::From(browser_view_->browser());
++  if (has_workspace_theme && !key.app_controller) {
++    key.app_controller = WorkspaceColorMixers::Get();
++  }
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+   // ChromeOS SystemWebApps use the OS theme all the time.
+diff --git a/chrome/browser/ui/views/frame/multi_contents_background_view.cc b/chrome/browser/ui/views/frame/multi_contents_background_view.cc
+index 90bb0568b..03cb1c04a 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_background_view.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_background_view.cc
+@@ -4,8 +4,10 @@
+ 
+ #include "chrome/browser/ui/views/frame/multi_contents_background_view.h"
+ 
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/themed_background.h"
+ #include "chrome/browser/ui/views/helium/native_frame_materials.h"
++#include "chrome/browser/ui/views/workspaces/workspace_background.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/compositor/layer_solid_color.h"
+ #include "ui/gfx/geometry/rounded_corners_f.h"
+@@ -60,8 +62,13 @@ ui::LayerType MultiContentsBackgroundView::CalculateLayerType() const {
+       !ThemedBackground::GetBackgroundColor(this, browser_view_).has_value();
+   const bool use_native_materials =
+       helium::ShouldUseNativeFrameMaterials(browser_view_);
+-  return has_custom_image || use_native_materials ? ui::LAYER_TEXTURED
+-                                                 : ui::LAYER_SOLID_COLOR;
++  const workspaces::WorkspaceBackground* workspace_background =
++      browser_view_->workspace_background();
++  const bool has_workspace_theme =
++      workspace_background && workspace_background->IsThemeShown();
++  return has_custom_image || use_native_materials || has_workspace_theme
++             ? ui::LAYER_TEXTURED
++             : ui::LAYER_SOLID_COLOR;
+ }
+ 
+ void MultiContentsBackgroundView::UpdateSolidLayerColor() {
+diff --git a/chrome/browser/ui/views/frame/multi_contents_view.cc b/chrome/browser/ui/views/frame/multi_contents_view.cc
+index d48c360bf..e948508eb 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_view.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
+@@ -34,6 +34,7 @@
+ #include "chrome/browser/ui/views/frame/themed_background.h"
+ #include "chrome/browser/ui/views/new_tab_footer/footer_web_view.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
++#include "chrome/browser/ui/views/workspaces/workspace_background.h"
+ #include "chrome/common/pref_names.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "components/prefs/pref_service.h"
+@@ -579,6 +580,8 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
+ 
+   if (IsInSplitView()) {
+     available_space.Inset(split_view_insets_);
++  } else if (should_use_rounded_frame && HasWorkspaceTheme()) {
++    available_space.Inset(kWorkspaceThemeContentInset);
+   } else if (should_use_rounded_frame) {
+     gfx::Insets single_insets(kSplitViewContentInset);
+     single_insets.set_top(attached_chrome.TopInset());
+@@ -891,6 +894,12 @@ bool MultiContentsView::ShouldUseRoundedFrame() const {
+          !is_fullscreen;
+ }
+ 
++bool MultiContentsView::HasWorkspaceTheme() const {
++  const workspaces::WorkspaceBackground* workspace_background =
++      browser_view_->workspace_background();
++  return workspace_background && workspace_background->IsThemeShown();
++}
++
+ bool MultiContentsView::IsTopChromeAttachedForBorder() const {
+   return top_edge_attached_to_infobar_ ||
+          IsTopChromeAttached(*browser_view_,
+diff --git a/chrome/browser/ui/views/frame/multi_contents_view.h b/chrome/browser/ui/views/frame/multi_contents_view.h
+index b15c4d6b8..e3ff4c0b1 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_view.h
++++ b/chrome/browser/ui/views/frame/multi_contents_view.h
+@@ -63,6 +63,9 @@ class MultiContentsView
+   };
+ 
+   static constexpr int kSplitViewContentInset = 3;
++  // The margin around the single web contents while a workspace theme is
++  // shown, so the theme gradient frames the page.
++  static constexpr int kWorkspaceThemeContentInset = 8;
+ 
+   MultiContentsView(BrowserView* browser_view,
+                     std::unique_ptr<MultiContentsViewDelegate> delegate);
+@@ -184,6 +187,8 @@ class MultiContentsView
+ 
+   bool IsDragAndDropEnabled() const;
+   bool ShouldUseRoundedFrame() const;
++  // Returns whether the active workspace theme is shown in this window.
++  bool HasWorkspaceTheme() const;
+   void OnDragAndDropPrefStateChange();
+   void OnRoundedFramePrefStateChange();
+ 
 diff --git a/chrome/browser/ui/views/frame/themed_background.cc b/chrome/browser/ui/views/frame/themed_background.cc
 index 25e457835..9c6eeebcd 100644
 --- a/chrome/browser/ui/views/frame/themed_background.cc
@@ -1295,10 +1447,10 @@ index fe76a1b5d..7210c8225 100644
  
 diff --git a/chrome/browser/ui/views/workspaces/workspace_background.cc b/chrome/browser/ui/views/workspaces/workspace_background.cc
 new file mode 100644
-index 000000000..efd8f41d6
+index 000000000..7dc4c4967
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_background.cc
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,208 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1313,6 +1465,7 @@ index 000000000..efd8f41d6
 +#include "cc/paint/paint_flags.h"
 +#include "cc/paint/paint_shader.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 +#include "third_party/skia/include/core/SkBitmap.h"
 +#include "third_party/skia/include/core/SkPath.h"
 +#include "ui/gfx/animation/tween.h"
@@ -1488,10 +1641,14 @@ index 000000000..efd8f41d6
 +    animation_.Reset();
 +    animation_.Show();
 +  }
++  const bool was_shown = IsThemeShown();
 +  shown_id_ = id;
 +  shown_theme_ = theme;
 +  if (views::Widget* widget = browser_view_->GetWidget()) {
 +    widget->ThemeChanged();
++  }
++  if (was_shown != IsThemeShown() && browser_view_->multi_contents_view()) {
++    browser_view_->multi_contents_view()->InvalidateLayout();
 +  }
 +  SchedulePaintChrome();
 +}
@@ -1504,10 +1661,10 @@ index 000000000..efd8f41d6
 +}  // namespace workspaces
 diff --git a/chrome/browser/ui/views/workspaces/workspace_background.h b/chrome/browser/ui/views/workspaces/workspace_background.h
 new file mode 100644
-index 000000000..33b40f415
+index 000000000..5f809dda8
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_background.h
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,84 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1553,6 +1710,10 @@ index 000000000..33b40f415
 +  // Paints the background of `view` over `base`, the solid chrome color.
 +  // Returns false when no workspace theme is shown and nothing was painted.
 +  bool Paint(gfx::Canvas* canvas, const views::View* view, SkColor base) const;
++
++  // Returns whether a workspace theme is shown, so the chrome around the web
++  // contents lets the gradient through.
++  bool IsThemeShown() const { return !shown_theme_.colors.empty(); }
 +
 +  // WorkspaceController::Observer:
 +  void OnWorkspacesChanged() override;
