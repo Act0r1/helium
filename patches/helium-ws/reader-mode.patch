@@ -243,14 +243,100 @@ index 96c362772..ddbcde2da 100644
  
    // ReadAnythingLifecycleObserver:
    void Activate(
-diff --git a/components/dom_distiller/core/css/distilledpage_desktop.css b/components/dom_distiller/core/css/distilledpage_desktop.css
-index 2a66fda8c..10349271c 100644
---- a/components/dom_distiller/core/css/distilledpage_desktop.css
-+++ b/components/dom_distiller/core/css/distilledpage_desktop.css
-@@ -23,6 +23,16 @@ fieldset {
-   margin-top: 32px;
+diff --git a/components/dom_distiller/content/browser/distiller_javascript_service_impl.cc b/components/dom_distiller/content/browser/distiller_javascript_service_impl.cc
+index 4473bc67a..b06028d95 100644
+--- a/components/dom_distiller/content/browser/distiller_javascript_service_impl.cc
++++ b/components/dom_distiller/content/browser/distiller_javascript_service_impl.cc
+@@ -54,6 +54,15 @@ void DistillerJavaScriptServiceImpl::HandleStoreFontScalingPref(
+       ->SetUserPrefFontScaling(font_scale);
  }
  
++void DistillerJavaScriptServiceImpl::HandleStoreWideColumnPref(bool wide) {
++  if (!distiller_service_weak_ptr_) {
++    return;
++  }
++
++  distiller_service_weak_ptr_.get()->GetDistilledPagePrefs()->SetWideColumn(
++      wide);
++}
++
+ void CreateDistillerJavaScriptService(
+     base::WeakPtr<DomDistillerService> distiller_service_weak_ptr,
+     mojo::PendingReceiver<mojom::DistillerJavaScriptService> receiver) {
+diff --git a/components/dom_distiller/content/browser/distiller_javascript_service_impl.h b/components/dom_distiller/content/browser/distiller_javascript_service_impl.h
+index 2e53b3720..c373d35be 100644
+--- a/components/dom_distiller/content/browser/distiller_javascript_service_impl.h
++++ b/components/dom_distiller/content/browser/distiller_javascript_service_impl.h
+@@ -30,6 +30,7 @@ class DistillerJavaScriptServiceImpl
+   void HandleStoreThemePref(mojom::Theme theme) override;
+   void HandleStoreFontFamilyPref(mojom::FontFamily font_family) override;
+   void HandleStoreFontScalingPref(float font_scale) override;
++  void HandleStoreWideColumnPref(bool wide) override;
+ 
+   DistillerJavaScriptServiceImpl(const DistillerJavaScriptServiceImpl&) =
+       delete;
+diff --git a/components/dom_distiller/content/common/mojom/distiller_javascript_service.mojom b/components/dom_distiller/content/common/mojom/distiller_javascript_service.mojom
+index 6b2ad740b..347bc60a1 100644
+--- a/components/dom_distiller/content/common/mojom/distiller_javascript_service.mojom
++++ b/components/dom_distiller/content/common/mojom/distiller_javascript_service.mojom
+@@ -19,4 +19,6 @@ interface DistillerJavaScriptService {
+   HandleStoreFontFamilyPref(FontFamily font_family);
+   // Store selected font size scaling factor as a preference.
+   HandleStoreFontScalingPref(float font_scale);
++  // Store whether distilled pages use a wide column.
++  HandleStoreWideColumnPref(bool wide);
+ };
+diff --git a/components/dom_distiller/content/renderer/distiller_native_javascript.cc b/components/dom_distiller/content/renderer/distiller_native_javascript.cc
+index 0ad1cddda..a01e2dbbd 100644
+--- a/components/dom_distiller/content/renderer/distiller_native_javascript.cc
++++ b/components/dom_distiller/content/renderer/distiller_native_javascript.cc
+@@ -47,6 +47,10 @@ void DistillerNativeJavaScript::StoreFloatFontScaling(float float_font_scale) {
+   distiller_js_service_->HandleStoreFontScalingPref(float_font_scale);
+ }
+ 
++void DistillerNativeJavaScript::StoreBoolWideColumn(bool wide) {
++  distiller_js_service_->HandleStoreWideColumnPref(wide);
++}
++
+ void DistillerNativeJavaScript::AddJavaScriptObjectToFrame(
+     v8::Local<v8::Context> context) {
+   v8::Isolate* isolate =
+@@ -87,6 +91,11 @@ void DistillerNativeJavaScript::AddJavaScriptObjectToFrame(
+       isolate, distiller_obj, "storeFontScalingPref",
+       base::BindRepeating(&DistillerNativeJavaScript::StoreFloatFontScaling,
+                           weak_factory_.GetWeakPtr()));
++
++  BindFunctionToObject(
++      isolate, distiller_obj, "storeWideColumnPref",
++      base::BindRepeating(&DistillerNativeJavaScript::StoreBoolWideColumn,
++                          weak_factory_.GetWeakPtr()));
+ }
+ 
+ template <typename Sig>
+diff --git a/components/dom_distiller/content/renderer/distiller_native_javascript.h b/components/dom_distiller/content/renderer/distiller_native_javascript.h
+index d72972205..250f69812 100644
+--- a/components/dom_distiller/content/renderer/distiller_native_javascript.h
++++ b/components/dom_distiller/content/renderer/distiller_native_javascript.h
+@@ -43,6 +43,7 @@ class DistillerNativeJavaScript {
+   void StoreIntTheme(int theme);
+   void StoreIntFontFamily(int font_family);
+   void StoreFloatFontScaling(float font_scale);
++  void StoreBoolWideColumn(bool wide);
+ 
+   raw_ptr<content::RenderFrame> render_frame_;
+   mojo::Remote<mojom::DistillerJavaScriptService> distiller_js_service_;
+diff --git a/components/dom_distiller/core/css/distilledpage_desktop.css b/components/dom_distiller/core/css/distilledpage_desktop.css
+index 2a66fda8c..d0ae0aa08 100644
+--- a/components/dom_distiller/core/css/distilledpage_desktop.css
++++ b/components/dom_distiller/core/css/distilledpage_desktop.css
+@@ -20,7 +20,17 @@ fieldset {
+ }
+ 
+ #main-content #article-header {
+-  margin-top: 32px;
++  margin-top: 84px;
++}
++
 +#article-meta {
 +  font-size: 0.875em;
 +  margin: 0.5em 16px 0;
@@ -259,115 +345,514 @@ index 2a66fda8c..10349271c 100644
 +
 +#article-meta[hidden] {
 +  display: none;
-+}
-+
+ }
+ 
  .screen-reader-only {
-   border: none;
-   color: transparent;
-@@ -55,7 +65,9 @@ fieldset {
-   color: rgb(var(--google-grey-700));
+@@ -40,290 +50,201 @@ fieldset {
+   width: 35em;
  }
  
+-#settings-container {
+-  border-bottom: thin solid gray;
+-  display: flex;
+-  flex: 1 1 auto;
+-  height: 36px;
+-  justify-content: flex-end;
+-}
+-
+-#settings-container button {
+-  background: transparent;
+-  border: none;
+-  border-radius: 50%;
+-  color: rgb(var(--google-grey-700));
+-}
+-
 -#settings-container button .material-icons {
-+#settings-container .material-icons {
-+  font-style: normal;
-+  line-height: 1;
-   user-select: none;
+-  user-select: none;
+-}
+-
+-#settings-container button.activated {
+-  background-color: rgba(0, 0, 0, .1);
+-}
+-
+-.dark #settings-container button.activated {
+-  background-color: rgba(255, 255, 255, .1);
+-}
+-
+-#settings-container button:focus {
+-  background-color: rgba(95, 99, 104, .2);
+-  box-shadow: 0 0 0 8px rgba(95, 99, 104, .2);
+-  outline: none;
++body.wide-column #main-content {
++  width: 48em;
  }
  
-@@ -90,7 +102,7 @@ fieldset {
-   color: rgb(var(--google-grey-800));
-   font-family: 'Roboto Regular', 'Roboto', sans-serif;
+-#settings-container button#settings-toggle {
+-  border-radius: 16px;
+-}
+-
+-.dark #settings-toggle {
+-  color: #E0E0E0;
+-}
++/* Reader toolbar. Sizes are in px so the toolbar does not follow the article
++ * font scaling. */
+ 
+-#settings-dialog {
+-  border: none;
+-  border-radius: 2px;
+-  box-shadow: 0 1px 3px 0 rgba(60, 64, 67, 0.3),
+-              0 4px 8px 3px rgba(60, 64, 67, 0.15);
+-  box-sizing: border-box;
+-  color: rgb(var(--google-grey-800));
+-  font-family: 'Roboto Regular', 'Roboto', sans-serif;
++#reader-toolbar {
++  --toolbar-bg: rgba(246, 247, 249, 0.92);
++  --toolbar-fg: rgb(var(--google-grey-900));
++  --toolbar-hover: rgba(0, 0, 0, 0.07);
++  --toolbar-accent: rgb(var(--google-blue-600));
++  --toolbar-separator: rgba(0, 0, 0, 0.14);
++  align-items: center;
++  backdrop-filter: blur(12px);
++  background: var(--toolbar-bg);
++  border-radius: 14px;
++  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.16);
++  color: var(--toolbar-fg);
++  display: flex;
++  flex-wrap: wrap;
++  font-family: 'Roboto', sans-serif;
    font-size: 13px;
 -  height: 168px;
-+  height: fit-content;
-   padding: 16px;
+-  padding: 16px;
++  gap: 6px;
++  justify-content: center;
++  left: 50%;
++  max-width: calc(100vw - 24px);
++  padding: 6px 8px;
    position: fixed;
-   top: 0;
-@@ -165,15 +177,18 @@ select#font-family-selection {
-   font-family: inherit;
-   font-size: inherit;
-   height: 32px;
--  padding: 0 8px 0 8px;
-+  padding: 0 24px 0 8px;
-   width: 100%;
+-  top: 0;
+-  width: 320px;
+-
+-  /* The z-index is set so that any 'positioned' elements in the article text
+-   * (e.g. footnotes) are rendered below the dialog. */
+-  z-index: 1;
++  top: 12px;
++  transform: translateX(-50%);
++  transition: transform 250ms ease, opacity 250ms ease,
++              background-color 500ms ease, color 500ms ease;
++  width: max-content;
++  z-index: 2;
  }
  
- #arrow-drop-down {
+-#settings-header h1 {
+-  font-size: 15px;
++.sepia #reader-toolbar {
++  --toolbar-bg: rgba(236, 225, 202, 0.94);
++  --toolbar-hover: rgba(91, 70, 54, 0.1);
++  --toolbar-accent: #A0622D;
++  --toolbar-fg: rgb(var(--google-brown-900));
++  --toolbar-separator: rgba(91, 70, 54, 0.2);
+ }
+ 
+-#settings-dialog::backdrop {
+-  display: none;
++.dark #reader-toolbar {
++  --toolbar-bg: rgba(48, 49, 53, 0.94);
++  --toolbar-fg: #E8EAED;
++  --toolbar-hover: rgba(255, 255, 255, 0.09);
++  --toolbar-accent: #8AB4F8;
++  --toolbar-separator: rgba(255, 255, 255, 0.16);
+ }
+ 
+-#dialog-backdrop {
+-  bottom: 0;
+-  display: none;
+-  left: 0;
++#reader-toolbar.toolbar-hidden {
+   opacity: 0;
+-  position: fixed;
+-  right: 0;
+-  top: 0;
+-}
+-
+-#settings-header {
+-  margin-bottom: 16px;
+-}
+-
+-#settings-header > * {
+-  display: inline;
+-}
+-
+-#close-settings-button {
+-  height: 18px;
+-  padding: 0;
+-  position: absolute;
+-  right: 8px;
+-  top: 8px;
+-  width: 18px;
+-}
+-
+-#close-settings-button > * {
+-  font-size: 18px;
+-  margin: 0;
++  pointer-events: none;
++  transform: translate(-50%, -140%);
+ }
+ 
+-
+-#settings-fields {
+-  display: grid;
+-  grid-row-gap: 12px;
+-  grid-template:
+-    'style color' 32px
+-    'size size'  32px
+-    / 50% 50%;
+-  width: 100%;
++.toolbar-group {
 +  align-items: center;
 +  display: flex;
-+  height: 32px;
-   pointer-events: none;
-   position: absolute;
++  gap: 4px;
+ }
+ 
+-.font-family-container {
+-  position: relative;
++.toolbar-separator {
++  background: var(--toolbar-separator);
++  height: 22px;
++  margin: 0 4px;
++  width: 1px;
+ }
+ 
+-select#font-family-selection {
+-  -webkit-appearance: none;
++#reader-toolbar button {
++  align-items: center;
+   background: transparent;
+-  border: 1px solid silver;
+-  border-radius: 2px;
++  border: none;
++  border-radius: 8px;
+   color: inherit;
+-  font-family: inherit;
+-  font-size: inherit;
+-  height: 32px;
+-  padding: 0 8px 0 8px;
+-  width: 100%;
++  cursor: pointer;
++  display: inline-flex;
++  font: inherit;
++  height: 30px;
++  justify-content: center;
++  min-width: 30px;
++  padding: 0 8px;
+ }
+ 
+-#arrow-drop-down {
+-  pointer-events: none;
+-  position: absolute;
 -  right: 0;
 -  top: 4px;
-+  right: 8px;
-+  top: 0;
++#reader-toolbar button:hover:not(:disabled) {
++  background: var(--toolbar-hover);
  }
  
- select#font-family-selection:focus {
-@@ -221,11 +236,17 @@ select#font-family-selection:focus {
+-select#font-family-selection:focus {
+-  outline-color: rgb(var(--google-blue-600));
++#reader-toolbar button:focus-visible {
++  outline: 2px solid var(--toolbar-accent);
++  outline-offset: 1px;
  }
  
- .checkmark .material-icons {
--  background-color: white;
-+  align-items: center;
-+  background-color: rgb(var(--google-blue-600));
+-#theme-selection ul {
+-  column-gap: 16px;
+-  display: grid;
+-  grid-template-columns: 1fr 1fr 1fr;
+-  list-style-type: none;
+-  margin-inline-start: 16px;
++#reader-toolbar button:disabled {
++  cursor: default;
++  opacity: 0.35;
+ }
+ 
+-.theme-option {
+-  display: block;
+-  height: 32px;
+-  position: relative;
+-  width: 32px;
++#reader-toolbar button[aria-pressed='true'] {
++  background: var(--toolbar-hover);
++  box-shadow: inset 0 0 0 1.5px var(--toolbar-accent);
+ }
+ 
+-.theme-option input[type='radio'] {
+-  -webkit-appearance: none;
+-  appearance: none;
+-  border: 1px solid rgb(var(--google-grey-500));
++#reader-toolbar .theme-swatch {
++  border: 1px solid rgba(128, 128, 128, 0.5);
    border-radius: 50%;
+-  height: 32px;
+-  margin: 0;
++  height: 22px;
++  margin: 0 2px;
++  min-width: 0;
+   padding: 0;
+-  width: 32px;
++  width: 22px;
+ }
+ 
+-.theme-option input[type='radio']:focus {
+-  border: 2px solid rgb(var(--google-blue-600));
+-  outline: none;
++#reader-toolbar .theme-swatch.light {
++  background: #FFF;
+ }
+ 
+-.checkmark {
+-  bottom: -3px;
+-  display: none;
+-  height: 16px;
+-  position: absolute;
+-  right: -3px;
+-  width: 16px;
++#reader-toolbar .theme-swatch.sepia {
++  background: rgb(var(--google-yellow-50));
+ }
+ 
+-.checkmark .material-icons {
+-  background-color: white;
+-  border-radius: 50%;
 -  color: rgb(var(--google-blue-600));
 -  font-size: 16px;
-+  color: white;
-+  display: flex;
-+  font-size: 11px;
-+  font-weight: bold;
-+  height: 16px;
-+  justify-content: center;
-   user-select: none;
-+  width: 16px;
+-  user-select: none;
++#reader-toolbar .theme-swatch.dark {
++  background: rgb(var(--google-grey-900));
  }
  
- .theme-option input[type='radio']:checked + .checkmark {
-@@ -235,12 +256,14 @@ select#font-family-selection:focus {
- #font-size-wrapper {
-   grid-area: size;
-   padding: 0 8px;
-+  position: relative;
+-.theme-option input[type='radio']:checked + .checkmark {
+-  display: inline;
++#reader-toolbar .theme-swatch[aria-pressed='true'] {
++  box-shadow: 0 0 0 2px var(--toolbar-bg), 0 0 0 4px var(--toolbar-accent);
  }
  
- #font-size-selection {
-   --fontSizePercent: 22%;
-   -webkit-appearance: none;
-   background: transparent;
-+  display: block;
-   margin: 0;
-   width: 100%;
+-#font-size-wrapper {
+-  grid-area: size;
+-  padding: 0 8px;
++#reader-toolbar .font-option {
++  font-size: 15px;
  }
-@@ -296,8 +319,7 @@ select#font-family-selection:focus {
-   height: 2px;
-   justify-content: space-between;
  
+-#font-size-selection {
+-  --fontSizePercent: 22%;
+-  -webkit-appearance: none;
+-  background: transparent;
+-  margin: 0;
+-  width: 100%;
++#reader-toolbar .font-option[data-font='serif'] {
++  font-family: serif;
+ }
+ 
+-#font-size-selection:focus {
+-  outline: none;
++#reader-toolbar .font-option[data-font='monospace'] {
++  font-family: monospace;
+ }
+ 
+-#font-size-selection::-webkit-slider-thumb {
+-  -webkit-appearance: none;
+-  background-color: rgb(var(--google-blue-600));
+-  border-radius: 50%;
+-  height: 10px;
+-
+-  /* Position the thumb over the slider track. */
+-  margin-top: -4px;
+-
+-  position: relative;
+-  width: 10px;
+-
+-  /* Render the thumb on top of the tickmarks. We can't just rearrange the HTML
+-   * because the tickmarks need to render above the slider's track but below the
+-   * thumb. */
+-  z-index: 1;
++#reader-toolbar #font-size-decrease,
++#reader-toolbar #font-size-increase {
++  font-size: 17px;
+ }
+ 
+-#font-size-selection:focus::-webkit-slider-thumb {
+-  box-shadow: 0 0 0 11px rgba(var(--google-blue-600), .2);
++#font-size-value {
++  font-variant-numeric: tabular-nums;
++  min-width: 44px;
++  text-align: center;
+ }
+ 
+-#font-size-selection::-webkit-slider-container {
+-  /* Increase the clickable area of the slider. */
+-  border-bottom: 5px solid transparent;
+-  border-top: 5px solid transparent;
++.width-option svg {
++  fill: none;
++  height: 14px;
++  stroke: currentColor;
++  stroke-width: 1.6;
++  width: 18px;
+ }
+ 
+-#font-size-selection::-webkit-slider-runnable-track {
+-  /* Make the track opaque blue to the left of the thumb and mostly transparent
+-   * to the right of the thumb. */
+-  background: linear-gradient(
+-    to right,
+-    rgb(var(--google-blue-600)),
+-    rgb(var(--google-blue-600)) var(--fontSizePercent),
+-    rgba(var(--google-blue-600), .2) var(--fontSizePercent),
+-    rgba(var(--google-blue-600), .2));
+-
+-  height: 2px;
+-  width: 100%;
++#reader-toolbar #close-reader {
++  font-weight: 600;
+ }
+ 
+-.tickmarks {
+-  display: flex;
+-  height: 2px;
+-  justify-content: space-between;
+-
 -  /* Position the tickmarks over the slider track. */
 -  margin-top: -19px;
-+  left: 12px;
+-
+-  /* Restrict the height of individual options to that of their containing
+-   * datalist. Setting the height property directly does not seem to have an
+-   * impact. */
+-  overflow: hidden;
++/* Thin reading progress line at the top of the window. */
  
-   /* Restrict the height of individual options to that of their containing
-    * datalist. Setting the height property directly does not seem to have an
-@@ -305,7 +327,9 @@ select#font-family-selection:focus {
-   overflow: hidden;
- 
-   padding-top: 0;
+-  padding-top: 0;
 -  width: 100%;
-+  position: absolute;
-+  right: 12px;
-+  top: 5px;
++#reading-progress {
++  height: 3px;
++  left: 0;
++  pointer-events: none;
++  position: fixed;
++  right: 0;
++  top: 0;
++  z-index: 3;
  }
  
- .tickmarks option {
+-.tickmarks option {
+-  padding: 0;
+-  width: 2px;
++#reading-progress-bar {
++  background: rgb(var(--google-blue-600));
++  height: 100%;
++  width: 0;
+ }
+ 
+-.tickmarks option.before-thumb {
+-  background: white;
++.sepia #reading-progress-bar {
++  background: #A0622D;
+ }
+ 
+-.tickmarks option.after-thumb {
+-  background: rgb(var(--google-blue-600));
++.dark #reading-progress-bar {
++  background: #8AB4F8;
+ }
+ 
+-.label-container {
+-  display: flex;
+-  font-size: 13px;
+-  justify-content: space-between;
+-  padding-top: 8px;
++@media (prefers-reduced-motion: reduce) {
++  #reader-toolbar {
++    transition: none;
++  }
+ }
+diff --git a/components/dom_distiller/core/distilled_page_prefs.cc b/components/dom_distiller/core/distilled_page_prefs.cc
+index 3151a239a..43a605c23 100644
+--- a/components/dom_distiller/core/distilled_page_prefs.cc
++++ b/components/dom_distiller/core/distilled_page_prefs.cc
+@@ -42,6 +42,10 @@ DistilledPagePrefs::DistilledPagePrefs(PrefService* pref_service)
+       prefs::kLinksEnabled,
+       base::BindRepeating(&DistilledPagePrefs::NotifyOnChangeLinksEnabled,
+                           weak_ptr_factory_.GetWeakPtr()));
++  pref_change_registrar_.Add(
++      prefs::kWideColumn,
++      base::BindRepeating(&DistilledPagePrefs::NotifyOnChangeWideColumn,
++                          weak_ptr_factory_.GetWeakPtr()));
+ }
+ 
+ DistilledPagePrefs::~DistilledPagePrefs() = default;
+@@ -54,6 +58,7 @@ void DistilledPagePrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
+       prefs::kFont, static_cast<int32_t>(mojom::FontFamily::kSansSerif));
+   registry->RegisterDoublePref(prefs::kFontScale, kDefaultFontScale);
+   registry->RegisterBooleanPref(prefs::kLinksEnabled, true);
++  registry->RegisterBooleanPref(prefs::kWideColumn, false);
+   registry->RegisterBooleanPref(prefs::kReaderForAccessibility, false);
+ }
+ 
+@@ -190,6 +195,14 @@ bool DistilledPagePrefs::GetLinksEnabled() {
+   return pref_service_->GetBoolean(prefs::kLinksEnabled);
+ }
+ 
++void DistilledPagePrefs::SetWideColumn(bool wide) {
++  pref_service_->SetBoolean(prefs::kWideColumn, wide);
++}
++
++bool DistilledPagePrefs::GetWideColumn() {
++  return pref_service_->GetBoolean(prefs::kWideColumn);
++}
++
+ void DistilledPagePrefs::AddObserver(Observer* obs) {
+   observers_.AddObserver(obs);
+ }
+@@ -231,4 +244,11 @@ void DistilledPagePrefs::NotifyOnChangeLinksEnabled() {
+   }
+ }
+ 
++void DistilledPagePrefs::NotifyOnChangeWideColumn() {
++  bool wide = GetWideColumn();
++  for (Observer& observer : observers_) {
++    observer.OnChangeWideColumn(wide);
++  }
++}
++
+ }  // namespace dom_distiller
 diff --git a/components/dom_distiller/core/distilled_page_prefs.h b/components/dom_distiller/core/distilled_page_prefs.h
-index 8be6c7adc..368b68004 100644
+index 8be6c7adc..d5a437d6c 100644
 --- a/components/dom_distiller/core/distilled_page_prefs.h
 +++ b/components/dom_distiller/core/distilled_page_prefs.h
-@@ -120,7 +120,7 @@ class DistilledPagePrefs {
+@@ -41,6 +41,7 @@ class DistilledPagePrefs {
+                                ThemeSettingsUpdateSource source) = 0;
+     virtual void OnChangeFontScaling(float scaling) = 0;
+     virtual void OnChangeLinksEnabled(bool enabled) = 0;
++    virtual void OnChangeWideColumn(bool wide) {}
+   };
+ 
+   explicit DistilledPagePrefs(PrefService* pref_service);
+@@ -93,6 +94,11 @@ class DistilledPagePrefs {
+   // Returns whether links are enabled in distilled pages.
+   bool GetLinksEnabled();
+ 
++  // Sets whether distilled pages use a wide column.
++  void SetWideColumn(bool wide);
++  // Returns whether distilled pages use a wide column.
++  bool GetWideColumn();
++
+   void AddObserver(Observer* obs);
+   void RemoveObserver(Observer* obs);
+ 
+@@ -115,12 +121,14 @@ class DistilledPagePrefs {
+   void NotifyOnChangeFontScaling();
+   // Notifies all Observers of new links enabled state.
+   void NotifyOnChangeLinksEnabled();
++  // Notifies all Observers of new column width.
++  void NotifyOnChangeWideColumn();
+ 
+   raw_ptr<PrefService> pref_service_;
    PrefChangeRegistrar pref_change_registrar_;
    base::ObserverList<Observer> observers_;
  
@@ -390,11 +875,47 @@ index fcec9a6a8..6855ffae1 100644
  }
  
  bool ShouldStartDistillabilityService() {
+diff --git a/components/dom_distiller/core/dom_distiller_request_view_base.cc b/components/dom_distiller/core/dom_distiller_request_view_base.cc
+index cdf693561..957610f33 100644
+--- a/components/dom_distiller/core/dom_distiller_request_view_base.cc
++++ b/components/dom_distiller/core/dom_distiller_request_view_base.cc
+@@ -123,6 +123,10 @@ void DomDistillerRequestViewBase::OnChangeLinksEnabled(bool enabled) {
+   SendJavaScript(viewer::GetDistilledPageLinksEnabledJs(enabled));
+ }
+ 
++void DomDistillerRequestViewBase::OnChangeWideColumn(bool wide) {
++  SendJavaScript(viewer::GetDistilledPageWideColumnJs(wide));
++}
++
+ void DomDistillerRequestViewBase::TakeViewerHandle(
+     std::unique_ptr<ViewerHandle> viewer_handle) {
+   viewer_handle_ = std::move(viewer_handle);
+@@ -138,6 +142,8 @@ void DomDistillerRequestViewBase::SendCommonJavaScript() {
+   SendJavaScript(viewer::SetDistilledPageBaseFontSize(GetBaseFontSize()));
+   SendJavaScript(viewer::GetDistilledPageLinksEnabledJs(
+       distilled_page_prefs_->GetLinksEnabled()));
++  SendJavaScript(viewer::GetDistilledPageWideColumnJs(
++      distilled_page_prefs_->GetWideColumn()));
+ }
+ 
+ }  // namespace dom_distiller
+diff --git a/components/dom_distiller/core/dom_distiller_request_view_base.h b/components/dom_distiller/core/dom_distiller_request_view_base.h
+index 7d9776bda..9fc2eb9eb 100644
+--- a/components/dom_distiller/core/dom_distiller_request_view_base.h
++++ b/components/dom_distiller/core/dom_distiller_request_view_base.h
+@@ -45,6 +45,7 @@ class DomDistillerRequestViewBase : public ViewRequestDelegate,
+   void OnChangeFontFamily(mojom::FontFamily new_font_family) override;
+   void OnChangeFontScaling(float scaling) override;
+   void OnChangeLinksEnabled(bool enabled) override;
++  void OnChangeWideColumn(bool wide) override;
+ 
+   // Sends JavaScript to the attached Viewer, buffering data if the viewer isn't
+   // ready.
 diff --git a/components/dom_distiller/core/html/dom_distiller_viewer.html b/components/dom_distiller/core/html/dom_distiller_viewer.html
-index 7b0526533..d5625e6ff 100644
+index 7b0526533..f9bad9b31 100644
 --- a/components/dom_distiller/core/html/dom_distiller_viewer.html
 +++ b/components/dom_distiller/core/html/dom_distiller_viewer.html
-@@ -17,14 +17,6 @@ found in the LICENSE file.
+@@ -17,90 +17,56 @@ found in the LICENSE file.
    <!-- Placeholder for CSP. -->
    $1
    <title>$i18n{title}</title>
@@ -409,71 +930,141 @@ index 7b0526533..d5625e6ff 100644
    <!-- Placeholder for CSS. -->
    $2
  </head>
-@@ -34,7 +26,7 @@ found in the LICENSE file.
-       <div id="settings-container" class="desktop-only">
-         <button id="settings-toggle" type="button"
-             aria-label="$i18n{customizeAppearance}" tabindex=0>
+ <body class="$3">
++  <div id="reading-progress" class="desktop-only"><div id="reading-progress-bar"></div></div>
++  <div id="reader-toolbar" class="desktop-only" role="toolbar"
++      aria-label="$i18n{customizeAppearance}">
++    <div class="toolbar-group" id="theme-selection" role="group"
++        aria-label="$i18n{pageColor}">
++      <button type="button" class="theme-swatch light" data-theme="light"
++          aria-label="$i18n{light}" title="$i18n{light}"></button>
++      <button type="button" class="theme-swatch sepia" data-theme="sepia"
++          aria-label="$i18n{sepia}" title="$i18n{sepia}"></button>
++      <button type="button" class="theme-swatch dark" data-theme="dark"
++          aria-label="$i18n{dark}" title="$i18n{dark}"></button>
++    </div>
++    <div class="toolbar-separator"></div>
++    <div class="toolbar-group" id="font-family-selection" role="group"
++        aria-label="$i18n{fontStyle}">
++      <button type="button" class="font-option" data-font="sans-serif"
++          title="$i18n{sansSerifFont}">Aa</button>
++      <button type="button" class="font-option" data-font="serif"
++          title="$i18n{serifFont}">Aa</button>
++      <button type="button" class="font-option" data-font="monospace"
++          title="$i18n{monospaceFont}">Aa</button>
++    </div>
++    <div class="toolbar-separator"></div>
++    <div class="toolbar-group" role="group" aria-label="$i18n{fontSize}">
++      <button type="button" id="font-size-decrease"
++          aria-label="$i18n{small}" title="$i18n{small}">&minus;</button>
++      <span id="font-size-value" aria-live="polite">100%</span>
++      <button type="button" id="font-size-increase"
++          aria-label="$i18n{large}" title="$i18n{large}">+</button>
++    </div>
++    <div class="toolbar-separator"></div>
++    <div class="toolbar-group" id="column-width-selection" role="group">
++      <button type="button" class="width-option" data-wide="false"
++          aria-label="Narrow column" title="Narrow column">
++        <svg viewBox="0 0 18 14" aria-hidden="true"><rect x="1" y="1" width="16" height="12" rx="2"/><path d="M7 4v6M11 4v6"/></svg>
++      </button>
++      <button type="button" class="width-option" data-wide="true"
++          aria-label="Wide column" title="Wide column">
++        <svg viewBox="0 0 18 14" aria-hidden="true"><rect x="1" y="1" width="16" height="12" rx="2"/><path d="M4 4v6M14 4v6"/></svg>
++      </button>
++    </div>
++    <div class="toolbar-separator"></div>
++    <button type="button" id="close-reader" title="Esc">$i18n{close}</button>
++  </div>
+   <div id="content-wrap">
+     <div id="main-content">
+-      <div id="settings-container" class="desktop-only">
+-        <button id="settings-toggle" type="button"
+-            aria-label="$i18n{customizeAppearance}" tabindex=0>
 -          <i class="material-icons">&#xE165</i>
-+          <i class="material-icons">Aa</i>
-         </button>
-         <div id="dialog-backdrop"></div>
-         <dialog id="settings-dialog">
-@@ -51,7 +43,7 @@ found in the LICENSE file.
-                 <option value="serif">$i18n{serifFont}</option>
-                 <option value="monospace">$i18n{monospaceFont}</option>
-               </select>
+-        </button>
+-        <div id="dialog-backdrop"></div>
+-        <dialog id="settings-dialog">
+-          <div id="settings-header">
+-            <h1>$i18n{customizeAppearance}</h1>
+-          </div>
+-          <div id="settings-fields">
+-            <div class="setting font-family-container">
+-              <label id="font-family-label" class="screen-reader-only">
+-                $i18n{fontStyle}
+-              </label>
+-              <select id="font-family-selection" aria-labelledby="font-family-label" name="font-family">
+-                <option value="sans-serif" selected>$i18n{sansSerifFont}</option>
+-                <option value="serif">$i18n{serifFont}</option>
+-                <option value="monospace">$i18n{monospaceFont}</option>
+-              </select>
 -              <i class="material-icons" id="arrow-drop-down">&#xe5c5</i>
-+              <i class="material-icons" id="arrow-drop-down">&#x25BE;</i>
-             </div>
-             <div class="setting">
-               <fieldset id="theme-selection">
-@@ -62,17 +54,17 @@ found in the LICENSE file.
-                   <li class="theme-option">
-                     <input type="radio" name="theme" value="light"
-                        aria-label="$i18n{light}" id="theme-option-light" class="light" checked>
+-            </div>
+-            <div class="setting">
+-              <fieldset id="theme-selection">
+-                <legend class="screen-reader-only">
+-                  $i18n{pageColor}
+-                </legend>
+-                <ul>
+-                  <li class="theme-option">
+-                    <input type="radio" name="theme" value="light"
+-                       aria-label="$i18n{light}" id="theme-option-light" class="light" checked>
 -                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#xE86c</i></div>
-+                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#x2713;</i></div>
-                   </li>
-                   <li class="theme-option">
-                     <input type="radio" name="theme" value="sepia"
-                        aria-label="$i18n{sepia}" id="theme-option-sepia" class="sepia">
+-                  </li>
+-                  <li class="theme-option">
+-                    <input type="radio" name="theme" value="sepia"
+-                       aria-label="$i18n{sepia}" id="theme-option-sepia" class="sepia">
 -                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#xE86c</i></div>
-+                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#x2713;</i></div>
-                   </li>
-                   <li class="theme-option">
-                     <input type="radio" name="theme" value="dark"
-                        aria-label="$i18n{dark}" id="theme-option-dark" class="dark">
+-                  </li>
+-                  <li class="theme-option">
+-                    <input type="radio" name="theme" value="dark"
+-                       aria-label="$i18n{dark}" id="theme-option-dark" class="dark">
 -                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#xE86c</i></div>
-+                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#x2713;</i></div>
-                   </li>
-                 </ul>
-               </fieldset>
-@@ -97,7 +89,7 @@ found in the LICENSE file.
-           </div>
-             <button id="close-settings-button" type="button"
-                 aria-label="$i18n{close}" tabindex=0>
+-                  </li>
+-                </ul>
+-              </fieldset>
+-            </div>
+-            <div class="setting" id="font-size-wrapper">
+-              <label id="font-size-label" class="screen-reader-only">
+-                $i18n{fontSize}
+-              </label>
+-              <input aria-labelledby="font-size-label"
+-                     id="font-size-selection"
+-                     type="range"
+-                     name="font-size"
+-                     list="tickmarks"
+-                     min="0"
+-                     max="9"
+-                     value="2">
+-              <div class="label-container">
+-                <span id="slider-label-min">$i18n{small}</span>
+-                <span id="slider-label-max">$i18n{large}</span>
+-              </div>
+-            </div>
+-          </div>
+-            <button id="close-settings-button" type="button"
+-                aria-label="$i18n{close}" tabindex=0>
 -              <i class="material-icons">close</i>
-+              <i class="material-icons">&#x2715;</i>
-             </button>
-         </dialog>
-       </div>
-@@ -110,6 +102,11 @@ found in the LICENSE file.
+-            </button>
+-        </dialog>
+-      </div>
+       <article>
+         <header id="article-header">
+           <div id="title-collapse">
+@@ -110,6 +76,9 @@ found in the LICENSE file.
                </div>
              </div>
            </div>
 +          <div id="article-meta" hidden>
 +            <span id="reading-time"></span>
-+            <span aria-hidden="true">&middot;</span>
-+            <a id="view-original">View original</a>
 +          </div>
          </header>
          <div id="content"><noscript>$4</noscript></div>
        </article>
 diff --git a/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js b/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js
-index f3c6290b3..cca66a0f3 100644
+index f3c6290b3..9218ecde9 100644
 --- a/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js
 +++ b/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js
-@@ -69,6 +69,23 @@ function addToPage(html) {
+@@ -69,6 +69,83 @@ function addToPage(html) {
  
  function showLoadingIndicator(isLastPage) {
    $('loading-indicator').className = isLastPage ? 'hidden' : 'visible';
@@ -482,18 +1073,385 @@ index f3c6290b3..cca66a0f3 100644
 +  }
 +}
 +
-+// Shows the estimated reading time and a link back to the original page.
++const WORDS_PER_MINUTE = 230;
++let articleWordCount = 0;
++let lastScrollY = 0;
++
++// Shows the estimated reading time under the title.
 +function showArticleMeta() {
-+  const originalUrl = new URLSearchParams(location.search).get('url');
-+  const words = $('content').innerText.split(/\s+/).filter(Boolean).length;
-+  const minutes = Math.max(1, Math.round(words / 230));
-+  $('reading-time').textContent = minutes + ' min. read';
-+  if (originalUrl && /^https?:/.test(originalUrl)) {
-+    $('view-original').href = originalUrl;
-+  } else {
-+    $('view-original').remove();
-+  }
++  articleWordCount =
++      $('content').innerText.split(/\s+/).filter(Boolean).length;
 +  $('article-meta').hidden = false;
++  updateReadingProgress();
++}
++
++// Updates the progress bar and the time left, and hides the toolbar while
++// scrolling down and shows it while scrolling up.
++function updateReadingProgress() {
++  const y = window.scrollY;
++  const max = document.documentElement.scrollHeight - window.innerHeight;
++  const progress = max > 0 ? Math.min(1, y / max) : 0;
++  $('reading-progress-bar').style.width = progress * 100 + '%';
++
++  const toolbar = $('reader-toolbar');
++  const hide = y > lastScrollY && y > 80 &&
++      !toolbar.contains(document.activeElement);
++  toolbar.classList.toggle('toolbar-hidden', hide);
++  lastScrollY = y;
++
++  if (!articleWordCount) {
++    return;
++  }
++  const total = Math.max(1, Math.round(articleWordCount / WORDS_PER_MINUTE));
++  const left = Math.ceil(articleWordCount * (1 - progress) / WORDS_PER_MINUTE);
++  let text = total + ' min. read';
++  if (y > 40) {
++    text = left > 0 ? left + ' min. left' : 'Finished';
++  }
++  $('reading-time').textContent = text;
++}
++
++// Returns to the original page.
++function closeReader() {
++  const originalUrl = new URLSearchParams(location.search).get('url');
++  if (history.length > 1) {
++    history.back();
++  } else if (originalUrl && /^https?:/.test(originalUrl)) {
++    location.href = originalUrl;
++  }
++}
++
++// Esc closes the reader, +/- change the font size, T switches the theme.
++function handleReaderKeys(event) {
++  if (event.ctrlKey || event.metaKey || event.altKey ||
++      event.target.isContentEditable ||
++      ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
++    return;
++  }
++  const key = event.key.toLowerCase();
++  if (key === 'escape') {
++    closeReader();
++  } else if (key === '+' || key === '=') {
++    FontSizeSlider.getInstance().step(1);
++  } else if (key === '-') {
++    FontSizeSlider.getInstance().step(-1);
++  } else if (event.code === 'KeyT') {
++    const order = ['light', 'sepia', 'dark'];
++    const next = order[(order.indexOf(getAppearanceSetting(themeClasses)) + 1) %
++                       order.length];
++    useTheme(next);
++    distiller.storeThemePref(themeClasses.indexOf(next));
++  } else {
++    return;
++  }
++  event.preventDefault();
  }
  
  // Sets the title.
+@@ -101,6 +178,10 @@ function useFontFamily(fontFamily) {
+   SettingsDialog.getInstance().useFontFamily(fontFamily);
+ }
+ 
++function useWideColumn(wide) {
++  SettingsDialog.getInstance().useWideColumn(wide);
++}
++
+ function setLinksEnabled(enabled) {
+   document.body.classList.toggle('links-hidden', !enabled);
+ }
+@@ -179,5 +260,8 @@ function initializeDomDistillerViewer() {
+     Pincher.getInstance();
+   } else {
+     FontSizeSlider.getInstance();
++    window.addEventListener('scroll', updateReadingProgress, {passive: true});
++    document.addEventListener('keydown', handleReaderKeys);
++    $('close-reader').addEventListener('click', closeReader);
+   }
+ }
+diff --git a/components/dom_distiller/core/javascript/font_size_slider.js b/components/dom_distiller/core/javascript/font_size_slider.js
+index 8c983f84f..18b9b5110 100644
+--- a/components/dom_distiller/core/javascript/font_size_slider.js
++++ b/components/dom_distiller/core/javascript/font_size_slider.js
+@@ -2,8 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-// TODO(crbug.com/40108835): Consider making this a custom HTML element.
+-// The font size slider is visible on desktop platforms.
++// The font size control of the reader toolbar: "− 100% +" buttons stepping
++// through fixed scales. Visible on desktop platforms.
+ class FontSizeSlider {
+   static #instance = null;
+ 
+@@ -13,54 +13,55 @@ class FontSizeSlider {
+   }
+ 
+   constructor() {
+-    this.element = $('font-size-selection');
+     this.baseSize = 16;
+     // These scales are applied to a base size of 16px.
+     this.fontSizeScale = [0.875, 0.9375, 1, 1.125, 1.25, 1.5, 1.75, 2, 2.5, 3];
++    this.scale = 1;
++    this.decreaseButton = $('font-size-decrease');
++    this.increaseButton = $('font-size-increase');
++    this.valueLabel = $('font-size-value');
+ 
+-    this.element.addEventListener('input', (e) => {
+-      const scale = this.fontSizeScale[e.target.value];
+-      this.useFontScaling(scale);
+-      distiller.storeFontScalingPref(parseFloat(scale));
+-    });
+-
+-    this.tickmarks = document.createElement('datalist');
+-    this.tickmarks.setAttribute('class', 'tickmarks');
+-    this.element.after(this.tickmarks);
++    this.decreaseButton.addEventListener('click', () => this.step(-1));
++    this.increaseButton.addEventListener('click', () => this.step(1));
++    this.update();
++  }
+ 
+-    for (let i = 0; i < this.fontSizeScale.length; i++) {
+-      const option = document.createElement('option');
+-      option.setAttribute('value', i);
+-      option.textContent = this.fontSizeScale[i] * this.baseSize;
+-      this.tickmarks.appendChild(option);
++  // Moves to the next smaller (-1) or larger (1) scale and stores it.
++  step(direction) {
++    const index = this.nearestIndex() + direction;
++    if (index < 0 || index >= this.fontSizeScale.length) {
++      return;
+     }
+-    this.element.value = 2;
+-    this.update(this.element.value);
++    const scale = this.fontSizeScale[index];
++    this.useFontScaling(scale);
++    distiller.storeFontScalingPref(scale);
++  }
++
++  nearestIndex() {
++    let best = 0;
++    this.fontSizeScale.forEach((value, i) => {
++      if (Math.abs(value - this.scale) <
++          Math.abs(this.fontSizeScale[best] - this.scale)) {
++        best = i;
++      }
++    });
++    return best;
+   }
+ 
+-  // TODO(meredithl): validate |scale| and snap to nearest supported font size.
+   useFontScaling(scale, restoreCenter = true) {
+-    this.element.value = this.fontSizeScale.indexOf(scale);
++    this.scale = scale;
+     document.documentElement.style.fontSize = scale * this.baseSize + 'px';
+-    this.update(this.element.value);
++    this.update();
+   }
+ 
+-  update(position) {
+-    this.element.style.setProperty(
+-        '--fontSizePercent',
+-        (position / (this.fontSizeScale.length - 1) * 100) + '%');
+-    this.element.setAttribute(
+-        'aria-valuetext', this.fontSizeScale[position] + 'px');
+-    for (let option = this.tickmarks.firstChild; option != null;
+-         option = option.nextSibling) {
+-      const isBeforeThumb = option.value < position;
+-      option.classList.toggle('before-thumb', isBeforeThumb);
+-      option.classList.toggle('after-thumb', !isBeforeThumb);
+-    }
++  update() {
++    this.valueLabel.textContent = Math.round(this.scale * 100) + '%';
++    this.decreaseButton.disabled = this.scale <= this.fontSizeScale[0];
++    this.increaseButton.disabled = this.scale >= this.fontSizeScale.at(-1);
+   }
+ 
+   useBaseFontSize(size) {
+     this.baseSize = size;
+-    this.update(this.element.value);
++    this.update();
+   }
+ }
+diff --git a/components/dom_distiller/core/javascript/settings_dialog.js b/components/dom_distiller/core/javascript/settings_dialog.js
+index 274526729..3271eaaab 100644
+--- a/components/dom_distiller/core/javascript/settings_dialog.js
++++ b/components/dom_distiller/core/javascript/settings_dialog.js
+@@ -2,70 +2,52 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++// The reader toolbar: theme, font family and column width controls.
+ class SettingsDialog {
+   static #instance = null;
+ 
+   static getInstance() {
+     return SettingsDialog.#instance ??
+-        (SettingsDialog.#instance = new SettingsDialog(
+-             $('settings-toggle'), $('settings-dialog'), $('dialog-backdrop'),
+-             $('theme-selection'), $('font-family-selection')));
++        (SettingsDialog.#instance = new SettingsDialog());
+   }
+ 
+-  constructor(
+-      toggleElement, dialogElement, backdropElement, themeFieldset,
+-      fontFamilySelect) {
+-    this._toggleElement = toggleElement;
+-    this._dialogElement = dialogElement;
+-    this._backdropElement = backdropElement;
+-    this._themeFieldset = themeFieldset;
+-    this._fontFamilySelect = fontFamilySelect;
++  constructor() {
++    this._themeButtons = document.querySelectorAll('.theme-swatch');
++    this._fontButtons = document.querySelectorAll('.font-option');
++    this._widthButtons = document.querySelectorAll('.width-option');
+ 
+-    this._toggleElement.addEventListener('click', this.toggle.bind(this));
+-    this._dialogElement.addEventListener('close', this.close.bind(this));
+-    this._backdropElement.addEventListener('click', this.close.bind(this));
+-
+-    $('close-settings-button').addEventListener('click', this.close.bind(this));
++    this._themeButtons.forEach((button) => {
++      button.addEventListener('click', () => {
++        const theme = button.dataset.theme;
++        this.useTheme(theme);
++        distiller.storeThemePref(themeClasses.indexOf(theme));
++      });
++    });
+ 
+-    this._themeFieldset.addEventListener('change', (e) => {
+-      const newTheme = e.target.value;
+-      this.useTheme(newTheme);
+-      distiller.storeThemePref(themeClasses.indexOf(newTheme));
++    this._fontButtons.forEach((button) => {
++      button.addEventListener('click', () => {
++        const fontFamily = button.dataset.font;
++        this.useFontFamily(fontFamily);
++        distiller.storeFontFamilyPref(fontFamilyClasses.indexOf(fontFamily));
++      });
+     });
+ 
+-    this._fontFamilySelect.addEventListener('change', (e) => {
+-      const newFontFamily = e.target.value;
+-      this.useFontFamily(newFontFamily);
+-      distiller.storeFontFamilyPref(fontFamilyClasses.indexOf(newFontFamily));
++    this._widthButtons.forEach((button) => {
++      button.addEventListener('click', () => {
++        const wide = button.dataset.wide === 'true';
++        this.useWideColumn(wide);
++        distiller.storeWideColumnPref(wide);
++      });
+     });
+ 
+     // Appearance settings are loaded from user preferences, so on page load
+-    // the controllers for these settings may need to be updated to reflect
+-    // the active setting.
++    // the controls may need to be updated to reflect the active setting.
+     this._updateFontFamilyControls(getAppearanceSetting(fontFamilyClasses));
+     const selectedTheme = getAppearanceSetting(themeClasses);
+     this._updateThemeControls(selectedTheme);
+     updateToolbarColor(selectedTheme);
+-  }
+-
+-  toggle() {
+-    if (this._dialogElement.open) {
+-      this.close();
+-    } else {
+-      this.showModal();
+-    }
+-  }
+-
+-  showModal() {
+-    this._toggleElement.classList.add('activated');
+-    this._backdropElement.style.display = 'block';
+-    this._dialogElement.showModal();
+-  }
+-
+-  close() {
+-    this._toggleElement.classList.remove('activated');
+-    this._backdropElement.style.display = 'none';
+-    this._dialogElement.close();
++    this._updateWidthControls(
++        document.body.classList.contains('wide-column'));
+   }
+ 
+   useTheme(theme) {
+@@ -77,8 +59,8 @@ class SettingsDialog {
+   }
+ 
+   _updateThemeControls(theme) {
+-    const queryString = `input[value=${theme}]`;
+-    this._themeFieldset.querySelector(queryString).checked = true;
++    SettingsDialog._setPressed(
++        this._themeButtons, (button) => button.dataset.theme === theme);
+   }
+ 
+   useFontFamily(fontFamily) {
+@@ -89,7 +71,24 @@ class SettingsDialog {
+   }
+ 
+   _updateFontFamilyControls(fontFamily) {
+-    this._fontFamilySelect.selectedIndex =
+-        fontFamilyClasses.indexOf(fontFamily);
++    SettingsDialog._setPressed(
++        this._fontButtons, (button) => button.dataset.font === fontFamily);
++  }
++
++  useWideColumn(wide) {
++    document.body.classList.toggle('wide-column', wide);
++    this._updateWidthControls(wide);
++  }
++
++  _updateWidthControls(wide) {
++    SettingsDialog._setPressed(
++        this._widthButtons,
++        (button) => (button.dataset.wide === 'true') === wide);
++  }
++
++  static _setPressed(buttons, isPressed) {
++    buttons.forEach(
++        (button) =>
++            button.setAttribute('aria-pressed', String(isPressed(button))));
+   }
+ }
+diff --git a/components/dom_distiller/core/pref_names.h b/components/dom_distiller/core/pref_names.h
+index 59de32319..6b2c8f929 100644
+--- a/components/dom_distiller/core/pref_names.h
++++ b/components/dom_distiller/core/pref_names.h
+@@ -15,6 +15,8 @@ inline constexpr char kTheme[] = "dom_distiller.theme";
+ inline constexpr char kFontScale[] = "dom_distiller.font_scale";
+ // Path to the boolean whether links are enabled in distilled pages.
+ inline constexpr char kLinksEnabled[] = "dom_distiller.links_enabled";
++// Path to the boolean whether distilled pages use a wide column.
++inline constexpr char kWideColumn[] = "dom_distiller.wide_column";
+ // Path to the boolean whether Reader Mode for Accessibility option is enabled.
+ inline constexpr char kReaderForAccessibility[] =
+     "dom_distiller.reader_for_accessibility";
+diff --git a/components/dom_distiller/core/viewer.cc b/components/dom_distiller/core/viewer.cc
+index 6465fc348..b06aef6b3 100644
+--- a/components/dom_distiller/core/viewer.cc
++++ b/components/dom_distiller/core/viewer.cc
+@@ -418,6 +418,10 @@ const std::string GetDistilledPageLinksEnabledJs(bool enabled) {
+   return "setLinksEnabled(" + base::ToString(enabled) + ");";
+ }
+ 
++const std::string GetDistilledPageWideColumnJs(bool wide) {
++  return "useWideColumn(" + base::ToString(wide) + ");";
++}
++
+ const std::string GetDistilledPageFontFamilyJs(mojom::FontFamily font_family) {
+   return "useFontFamily('" + GetJsFontFamily(font_family) + "');";
+ }
+diff --git a/components/dom_distiller/core/viewer.h b/components/dom_distiller/core/viewer.h
+index a021918a6..f5ce1df7f 100644
+--- a/components/dom_distiller/core/viewer.h
++++ b/components/dom_distiller/core/viewer.h
+@@ -91,6 +91,9 @@ const std::string GetDistilledPageThemeJs(mojom::Theme theme);
+ // Returns JavaScript corresponding to setting whether links are enabled.
+ const std::string GetDistilledPageLinksEnabledJs(bool enabled);
+ 
++// Returns JavaScript to set the column width of the distilled page.
++const std::string GetDistilledPageWideColumnJs(bool wide);
++
+ /**
+  * Generates a JavaScript snippet to apply font scaling.
+  *
