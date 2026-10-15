@@ -1,0 +1,59 @@
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+index b9ef84f53..915aa2f25 100644
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -1090,13 +1090,8 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+ 
+     params.SetTop(top_container_layout.bounds.bottom());
+ 
+-    if (zen.enabled) {
+-      AdjustTopContainerForZenMode(top_container_layout, params,
+-                                   zen.top_chrome_ratio);
+-    }
+-
+     // The floating VTS offset only accounts for toolbar height, but the
+-    // top container may be taller (e.g. bookmarks bar, zen border strip).
++    // top container may be taller (e.g. bookmarks bar).
+     // Ensure the floating VTS starts below the full top container.
+     if (zen.floating_vertical_tab_strip && zen.TopChromeVisible() &&
+         top_container_layout.bounds.height() > 0) {
+@@ -1619,22 +1614,6 @@ gfx::Rect BrowserViewTabbedLayoutImpl::CalculateTopContainerLayout(
+                    params.visual_client_area.y() - original_top);
+ }
+ 
+-void BrowserViewTabbedLayoutImpl::AdjustTopContainerForZenMode(
+-    ProposedLayout& top_container_layout,
+-    BrowserLayoutParams& params,
+-    float top_chrome_ratio) const {
+-#if BUILDFLAG(IS_LINUX)
+-  constexpr int kZenModeTopBorderHeight = 4;
+-  if (top_chrome_ratio >= 1.0f || views().browser_view->bounds().y() > 0) {
+-    return;
+-  }
+-  if (top_container_layout.bounds.height() < kZenModeTopBorderHeight) {
+-    top_container_layout.bounds.set_height(kZenModeTopBorderHeight);
+-    params.SetTop(top_container_layout.bounds.bottom());
+-  }
+-#endif  // BUILDFLAG(IS_LINUX)
+-}
+-
+ void BrowserViewTabbedLayoutImpl::ConfigureTopContainerBackground(
+     const BrowserLayoutParams& params,
+     CustomCornersBackground* background) {
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
+index 4a7102847..3558ea423 100644
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h
+@@ -50,12 +50,6 @@ class BrowserViewTabbedLayoutImpl : public BrowserViewLayoutImpl {
+   void DoPostLayoutCleanup() override;
+ 
+  private:
+-  // When zen mode hides chrome, reserves a border strip in the top container
+-  // so the background can paint the window's top border.
+-  void AdjustTopContainerForZenMode(ProposedLayout& top_container_layout,
+-                                    BrowserLayoutParams& params,
+-                                    float top_chrome_ratio) const;
+-
+   struct HorizontalLayout;
+   struct SeparatorInfo;
+   struct SidePanelContentAnimation;
