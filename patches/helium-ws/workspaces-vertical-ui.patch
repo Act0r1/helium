@@ -1867,10 +1867,10 @@ index 000000000..5f809dda8
 +#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_BACKGROUND_H_
 diff --git a/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
 new file mode 100644
-index 000000000..4aa3828bb
+index 000000000..7a7e3846e
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
-@@ -0,0 +1,796 @@
+@@ -0,0 +1,803 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1893,6 +1893,7 @@ index 000000000..4aa3828bb
 +#include "base/strings/string_util.h"
 +#include "base/task/single_thread_task_runner.h"
 +#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/chrome_pages.h"
 +#include "chrome/browser/ui/tabs/tab_group_theme.h"
 +#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
@@ -1976,6 +1977,7 @@ index 000000000..4aa3828bb
 +  kEditCommand,
 +  kNewCommand,
 +  kCloseCommand,
++  kRulesCommand,
 +};
 +
 +std::u16string FirstGrapheme(std::u16string_view text) {
@@ -2211,6 +2213,7 @@ index 000000000..4aa3828bb
 +    model_ = std::make_unique<ui::SimpleMenuModel>(this);
 +    model_->AddItemWithStringId(kEditCommand, IDS_WORKSPACE_EDIT);
 +    model_->AddItemWithStringId(kNewCommand, IDS_WORKSPACE_NEW_TOOLTIP);
++    model_->AddItemWithStringId(kRulesCommand, IDS_WORKSPACE_RULES);
 +    model_->AddSeparator(ui::NORMAL_SEPARATOR);
 +    model_->AddItemWithStringId(kCloseCommand, IDS_WORKSPACE_CLOSE);
 +    runner_ = std::make_unique<views::MenuRunner>(
@@ -2236,6 +2239,10 @@ index 000000000..4aa3828bb
 +        break;
 +      case kCloseCommand:
 +        controller_->CloseWorkspace(workspace_id_);
++        break;
++      case kRulesCommand:
++        chrome::ShowSettingsSubPage(controller_->browser(),
++                                    "workspaces?id=" + workspace_id_);
 +        break;
 +    }
 +  }

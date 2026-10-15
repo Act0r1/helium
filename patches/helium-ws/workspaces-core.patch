@@ -123,10 +123,10 @@ index 92d191c30..a4fd7cc36 100644
  };
  
 diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
-index d3181174b..b340bb747 100644
+index d3181174b..fb1727fe9 100644
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -1513,6 +1513,14 @@ static_library("ui") {
+@@ -1513,6 +1513,16 @@ static_library("ui") {
    } else {
      # !is_android
      sources += [
@@ -138,10 +138,12 @@ index d3181174b..b340bb747 100644
 +      "views/workspaces/workspace_theme_picker.h",
 +      "workspaces/workspace_controller.cc",
 +      "workspaces/workspace_controller.h",
++      "workspaces/workspace_rules.cc",
++      "workspaces/workspace_rules.h",
        # This file physically lives in //chrome/browser but is compiled here so
        # that //chrome/browser:browser has no remaining sources. It registers
        # WebUI interface binders for desktop, which need this target's headers.
-@@ -3426,6 +3434,7 @@ static_library("ui") {
+@@ -3426,6 +3436,7 @@ static_library("ui") {
        # - c/b/ui/views/frame/browser_view.h
        # - c/b/ui/views/frame/themed_background.h
        # - c/b/ui/views/frame/vertical_tab_strip_region_view.h
@@ -149,7 +151,7 @@ index d3181174b..b340bb747 100644
        "//chrome/browser/ui/views/tabs/common:impl",
  
        # TODO(crbug.com/353332589): Remove this circular dependency when the
-@@ -4343,13 +4352,22 @@ source_set("unit_tests") {
+@@ -4343,13 +4354,22 @@ source_set("unit_tests") {
        "browser_unittest.cc",
        "browser_window_state_unittest.cc",
        "intent_picker_tab_helper_unittest.cc",
@@ -199,10 +201,18 @@ index de584514f..6ae002733 100644
    return extra_data;
  }
 diff --git a/chrome/browser/ui/browser_tab_strip_model_delegate.cc b/chrome/browser/ui/browser_tab_strip_model_delegate.cc
-index e4bd28dec..fe33c7eb9 100644
+index e4bd28dec..f206f5a39 100644
 --- a/chrome/browser/ui/browser_tab_strip_model_delegate.cc
 +++ b/chrome/browser/ui/browser_tab_strip_model_delegate.cc
-@@ -44,6 +44,7 @@
+@@ -12,6 +12,7 @@
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/metrics/user_metrics.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/glic/public/glic_keyed_service.h"
+ #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
+@@ -44,6 +45,7 @@
  #include "chrome/browser/ui/web_applications/app_browser_controller.h"
  #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
  #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
@@ -210,7 +220,7 @@ index e4bd28dec..fe33c7eb9 100644
  #include "chrome/common/chrome_switches.h"
  #include "components/contextual_tasks/public/features.h"
  #include "components/feature_engagement/public/feature_constants.h"
-@@ -428,6 +429,30 @@ void BrowserTabStripModelDelegate::OnRemovingAllTabsFromGroups(
+@@ -428,6 +430,50 @@ void BrowserTabStripModelDelegate::OnRemovingAllTabsFromGroups(
            std::move(callback)));
  }
  
@@ -238,14 +248,34 @@ index e4bd28dec..fe33c7eb9 100644
 +  }
 +}
 +
++std::u16string BrowserTabStripModelDelegate::GetWorkspaceRuleSite(
++    const tabs::TabInterface* tab) const {
++  const auto* controller = workspaces::WorkspaceController::From(browser_);
++  return controller ? base::UTF8ToUTF16(controller->GetRulePatternFor(tab))
++                    : std::u16string();
++}
++
++bool BrowserTabStripModelDelegate::HasWorkspaceRule(
++    const tabs::TabInterface* tab) const {
++  const auto* controller = workspaces::WorkspaceController::From(browser_);
++  return controller && controller->HasRuleFor(tab);
++}
++
++void BrowserTabStripModelDelegate::ToggleWorkspaceRule(
++    const tabs::TabInterface* tab) {
++  if (auto* controller = workspaces::WorkspaceController::From(browser_)) {
++    controller->ToggleRuleFor(tab);
++  }
++}
++
  void BrowserTabStripModelDelegate::CloseTab(
      const tabs::TabInterface* tab_interface,
      CloseTabSource source,
 diff --git a/chrome/browser/ui/browser_tab_strip_model_delegate.h b/chrome/browser/ui/browser_tab_strip_model_delegate.h
-index 36c725ea3..539bca70b 100644
+index 36c725ea3..f7db3531f 100644
 --- a/chrome/browser/ui/browser_tab_strip_model_delegate.h
 +++ b/chrome/browser/ui/browser_tab_strip_model_delegate.h
-@@ -93,6 +93,11 @@ class BrowserTabStripModelDelegate : public TabStripModelDelegate {
+@@ -93,6 +93,15 @@ class BrowserTabStripModelDelegate : public TabStripModelDelegate {
    void OnRemovingAllTabsFromGroups(
        const std::vector<tab_groups::TabGroupId>& group_ids,
        base::OnceCallback<void()> callback) override;
@@ -254,6 +284,10 @@ index 36c725ea3..539bca70b 100644
 +  bool IsTabEssential(const tabs::TabInterface* tab) const override;
 +  void SetTabsEssential(const std::vector<tabs::TabInterface*>& tabs,
 +                        bool essential) override;
++  std::u16string GetWorkspaceRuleSite(
++      const tabs::TabInterface* tab) const override;
++  bool HasWorkspaceRule(const tabs::TabInterface* tab) const override;
++  void ToggleWorkspaceRule(const tabs::TabInterface* tab) override;
    void GlicUnpinTabsFromAllConversations(
        base::span<const tabs::TabHandle> tab_handles) override;
    void CloseTab(const tabs::TabInterface* tab,
@@ -402,10 +436,10 @@ index 6ecba965f..d3dad081c 100644
    // If set, the browser should be created on the display given by
    // `display_id`.
 diff --git a/chrome/browser/ui/tabs/tab_menu_model.cc b/chrome/browser/ui/tabs/tab_menu_model.cc
-index 8ea664d6e..c0026e89d 100644
+index 8ea664d6e..7e2e371aa 100644
 --- a/chrome/browser/ui/tabs/tab_menu_model.cc
 +++ b/chrome/browser/ui/tabs/tab_menu_model.cc
-@@ -522,6 +522,14 @@ void TabMenuModel::Build(int index) {
+@@ -522,6 +522,25 @@ void TabMenuModel::Build(int index) {
              ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize));
    }
  
@@ -415,13 +449,24 @@ index 8ea664d6e..c0026e89d 100644
 +                            tab_strip_->GetTabAtIndex(index))
 +                            ? IDS_TAB_CXMENU_REMOVE_FROM_ESSENTIALS
 +                            : IDS_TAB_CXMENU_ADD_TO_ESSENTIALS);
++    tabs::TabInterface* tab = tab_strip_->GetTabAtIndex(index);
++    const std::u16string site =
++        tab_strip_->delegate()->GetWorkspaceRuleSite(tab);
++    if (num_tabs == 1 && !site.empty()) {
++      AddItem(TabStripModel::CommandToggleWorkspaceRule,
++              l10n_util::GetStringFUTF16(
++                  tab_strip_->delegate()->HasWorkspaceRule(tab)
++                      ? IDS_TAB_CXMENU_STOP_OPENING_SITE_IN_WORKSPACE
++                      : IDS_TAB_CXMENU_ALWAYS_OPEN_SITE_IN_WORKSPACE,
++                  site));
++    }
 +  }
 +
    const bool will_mute_tab = tab_strip_->WillContextMenuMuteTabs(index);
    AddItem(TabStripModel::CommandToggleTabMuted,
            l10n_util::GetPluralStringFUTF16(
 diff --git a/chrome/browser/ui/tabs/tab_strip_model.cc b/chrome/browser/ui/tabs/tab_strip_model.cc
-index b7677a9f5..39f45cd40 100644
+index b7677a9f5..e5dbfee72 100644
 --- a/chrome/browser/ui/tabs/tab_strip_model.cc
 +++ b/chrome/browser/ui/tabs/tab_strip_model.cc
 @@ -1677,12 +1677,18 @@ void TabStripModel::ExtendSelectionTo(int index) {
@@ -460,17 +505,21 @@ index b7677a9f5..39f45cd40 100644
  void TabStripModel::SelectLastTab(TabStripUserGestureDetails detail) {
    if (!empty()) {
      ActivateTab(*rbegin(), detail);
-@@ -2778,6 +2794,9 @@ bool TabStripModel::IsContextMenuCommandEnabled(
+@@ -2778,6 +2794,13 @@ bool TabStripModel::IsContextMenuCommandEnabled(
  
      case CommandToggleVertical:
        return true;
 +
 +    case CommandToggleEssential:
 +      return delegate_->SupportsEssentials();
++
++    case CommandToggleWorkspaceRule:
++      return !delegate_->GetWorkspaceRuleSite(GetTabAtIndex(context_index))
++                  .empty();
    }
    SCOPED_CRASH_KEY_NUMBER("TabStripModel", "command_id", command_id);
    NOTREACHED() << "Unsupported command: " << command_id;
-@@ -2995,6 +3014,16 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
+@@ -2995,6 +3018,21 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
        break;
      }
  
@@ -484,10 +533,15 @@ index b7677a9f5..39f45cd40 100644
 +      break;
 +    }
 +
++    case CommandToggleWorkspaceRule: {
++      delegate_->ToggleWorkspaceRule(GetTabAtIndex(context_index));
++      break;
++    }
++
      case CommandToggleTabMuted: {
        const bool mute = WillContextMenuMuteTabs(context_index);
        for (int index : GetIndicesForCommand(context_index)) {
-@@ -3658,8 +3687,9 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
+@@ -3658,8 +3696,9 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
           ++it, ++current_index) {
        tabs::TabInterface* tab = *it;
        std::optional<tab_groups::TabGroupId> current_group = tab->GetGroup();
@@ -499,7 +553,7 @@ index b7677a9f5..39f45cd40 100644
          return current_index;
        }
      }
-@@ -3672,8 +3702,9 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
+@@ -3672,8 +3711,9 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
           ++it, --current_index) {
        tabs::TabInterface* tab = *it;
        std::optional<tab_groups::TabGroupId> current_group = tab->GetGroup();
@@ -511,7 +565,7 @@ index b7677a9f5..39f45cd40 100644
          return current_index;
        }
      }
-@@ -3842,6 +3873,9 @@ std::vector<int> TabStripModel::GetIndicesClosedByCommand(
+@@ -3842,6 +3882,9 @@ std::vector<int> TabStripModel::GetIndicesClosedByCommand(
      if (focused_group.has_value() && GetTabGroupForTab(i) != focused_group) {
        continue;
      }
@@ -521,7 +575,7 @@ index b7677a9f5..39f45cd40 100644
      if (!indices_to_exclude.Contains(gfx::Range(i, i + 1)) && !IsTabPinned(i) &&
          (!is_selected || !IsTabSelected(i))) {
        indices.push_back(i);
-@@ -3880,6 +3914,10 @@ std::vector<tabs::TabInterface*> TabStripModel::GetTabsClosedByCommand(
+@@ -3880,6 +3923,10 @@ std::vector<tabs::TabInterface*> TabStripModel::GetTabsClosedByCommand(
        continue;
      }
  
@@ -532,7 +586,7 @@ index b7677a9f5..39f45cd40 100644
      if (tab == invoked_tab || tab->IsPinned()) {
        if (id == CommandCloseTabsToLeft && tab == invoked_tab) {
          break;
-@@ -4375,20 +4413,26 @@ TabStripSelectionChange TabStripModel::SetSelection(
+@@ -4375,20 +4422,26 @@ TabStripSelectionChange TabStripModel::SetSelection(
  }
  
  void TabStripModel::SelectRelativeTabCycle(TabRelativeDirection direction,
@@ -563,7 +617,7 @@ index b7677a9f5..39f45cd40 100644
      BrowserWindowInterface* browser =
          GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
            GetWebContentsAt(0));
-@@ -4396,8 +4440,19 @@ void TabStripModel::SelectMRUTab(TabRelativeDirection direction,
+@@ -4396,8 +4449,19 @@ void TabStripModel::SelectMRUTab(TabRelativeDirection direction,
        return;
      }
  
@@ -585,7 +639,7 @@ index b7677a9f5..39f45cd40 100644
      }
  
      std::sort(mru_cycle_list_.begin(), mru_cycle_list_.end(),
-@@ -4428,7 +4483,57 @@ void TabStripModel::StopMRUCycling() {
+@@ -4428,7 +4492,57 @@ void TabStripModel::StopMRUCycling() {
  }
  
  void TabStripModel::SelectRelativeTab(TabRelativeDirection direction,
@@ -644,7 +698,7 @@ index b7677a9f5..39f45cd40 100644
    // This may happen during automated testing or if a user somehow buffers
    // many key accelerators.
    if (empty()) {
-@@ -6007,11 +6112,15 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
+@@ -6007,11 +6121,15 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
    }
  
    gfx::Range block_tabs = gfx::Range(start_index, start_index + block_size);
@@ -661,7 +715,7 @@ index b7677a9f5..39f45cd40 100644
      return GetTabIndexAfterClosing(new_selected_index, block_tabs);
    }
  
-@@ -6019,7 +6128,7 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
+@@ -6019,7 +6137,7 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
    new_selected_index = GetIndexOfNextWebContentsOpenedByOpenerOf(block_tabs);
  
    if (new_selected_index != TabStripModel::kNoTab &&
@@ -670,7 +724,7 @@ index b7677a9f5..39f45cd40 100644
      return GetTabIndexAfterClosing(new_selected_index, block_tabs);
    }
  
-@@ -6029,7 +6138,7 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
+@@ -6029,7 +6147,7 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
      int opener_index = opener ? GetIndexOfTab(opener) : TabStripModel::kNoTab;
      if (opener_index != TabStripModel::kNoTab &&
          !block_tabs.Contains(gfx::Range(opener_index)) &&
@@ -728,10 +782,18 @@ index 9236b46a6..886440647 100644
    // Moves the active tab (or its split if it is in one) into the next slot
    // (kNext), or the previous slot (kPrevious). Respects group boundaries and
 diff --git a/chrome/browser/ui/tabs/tab_strip_model_delegate.h b/chrome/browser/ui/tabs/tab_strip_model_delegate.h
-index 0967577fa..38c35ab0a 100644
+index 0967577fa..d86764e69 100644
 --- a/chrome/browser/ui/tabs/tab_strip_model_delegate.h
 +++ b/chrome/browser/ui/tabs/tab_strip_model_delegate.h
-@@ -235,6 +235,24 @@ class TabStripModelDelegate {
+@@ -7,6 +7,7 @@
+ 
+ #include <memory>
+ #include <optional>
++#include <string>
+ #include <vector>
+ 
+ #include "base/functional/callback_forward.h"
+@@ -235,6 +236,39 @@ class TabStripModelDelegate {
        const std::vector<tab_groups::TabGroupId>& group_ids,
        base::OnceCallback<void()> callback) = 0;
  
@@ -753,14 +815,29 @@ index 0967577fa..38c35ab0a 100644
 +  virtual void SetTabsEssential(const std::vector<tabs::TabInterface*>& tabs,
 +                                bool essential) {}
 +
++  // Returns the site that a workspace rule for `tab` covers, or an empty
++  // string if `tab` can't have a rule.
++  virtual std::u16string GetWorkspaceRuleSite(
++      const tabs::TabInterface* tab) const {
++    return std::u16string();
++  }
++
++  // Returns true if `tab`'s site always opens in `tab`'s workspace.
++  virtual bool HasWorkspaceRule(const tabs::TabInterface* tab) const {
++    return false;
++  }
++
++  // Adds or removes the rule that opens `tab`'s site in its workspace.
++  virtual void ToggleWorkspaceRule(const tabs::TabInterface* tab) {}
++
    // Glic related delegation (see GlicKeyedService and GlicSharingManager).
    // Note: 'Pinning' in Glic is a distinct notion.
  
 diff --git a/chrome/browser/ui/tabs/tab_strip_prefs.cc b/chrome/browser/ui/tabs/tab_strip_prefs.cc
-index 47f4f372e..874fa65c7 100644
+index 47f4f372e..390f3b6f9 100644
 --- a/chrome/browser/ui/tabs/tab_strip_prefs.cc
 +++ b/chrome/browser/ui/tabs/tab_strip_prefs.cc
-@@ -29,8 +29,8 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
+@@ -29,12 +29,15 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
    registry->RegisterIntegerPref(prefs::kVerticalTabsUncollapsedWidth,
                                  kVerticalTabStripDefaultUncollapsedWidth);
  
@@ -771,12 +848,19 @@ index 47f4f372e..874fa65c7 100644
    registry->RegisterBooleanPref(prefs::kHeliumVerticalRightAligned, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenMode, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
+   registry->RegisterBooleanPref(prefs::kHeliumZenModeTopChromePinned, false);
++  registry->RegisterListPref(prefs::kHeliumWorkspaceRules);
++  registry->RegisterBooleanPref(prefs::kHeliumWorkspaceRulesEnabled, true);
++  registry->RegisterBooleanPref(prefs::kHeliumWorkspaceRulesFollow, true);
+ }
+ 
+ void MigrateHoverCardMemoryPref(PrefService* local_prefs) {
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.cc b/chrome/browser/ui/workspaces/workspace_controller.cc
 new file mode 100644
-index 000000000..dea096d92
+index 000000000..71853eae0
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.cc
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,872 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -812,10 +896,18 @@ index 000000000..dea096d92
 +#include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 +#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 +#include "chrome/browser/ui/unload_controller.h"
++#include "chrome/browser/ui/workspaces/workspace_rules.h"
++#include "chrome/common/pref_names.h"
 +#include "chrome/grit/generated_resources.h"
++#include "components/prefs/pref_service.h"
 +#include "components/sessions/content/session_tab_helper.h"
 +#include "components/tabs/public/split_tab_data.h"
 +#include "components/tabs/public/tab_group.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_observer.h"
 +#include "ui/base/l10n/l10n_util.h"
 +#include "url/gurl.h"
 +
@@ -958,6 +1050,29 @@ index 000000000..dea096d92
 +};
 +
 +}  // namespace
++
++// Waits for the first navigation of a tab opened by a page, which starts after
++// the tab is inserted.
++class WorkspaceController::FirstNavigationObserver
++    : public content::WebContentsObserver {
++ public:
++  FirstNavigationObserver(WorkspaceController* controller,
++                          tabs::TabInterface* tab)
++      : content::WebContentsObserver(tab->GetContents()),
++        controller_(controller),
++        handle_(tab->GetHandle()) {}
++
++  void DidStartNavigation(content::NavigationHandle* navigation) override {
++    if (navigation->IsInPrimaryMainFrame() &&
++        !navigation->IsSameDocument() && !navigation->GetURL().IsAboutBlank()) {
++      controller_->OnFirstNavigation(handle_, navigation->GetURL());
++    }
++  }
++
++ private:
++  const raw_ptr<WorkspaceController> controller_;
++  const tabs::TabHandle handle_;
++};
 +
 +DEFINE_USER_DATA(WorkspaceController);
 +
@@ -1197,6 +1312,7 @@ index 000000000..dea096d92
 +  }
 +  std::erase_if(workspaces_,
 +                [&id](const Workspace& workspace) { return workspace.id == id; });
++  RemoveRulesOf(*browser_->GetProfile()->GetPrefs(), id);
 +  for (const auto& handle : tabs) {
 +    if (auto* tab = handle.Get()) {
 +      if (const int index = model_->GetIndexOfTab(tab);
@@ -1245,6 +1361,34 @@ index 000000000..dea096d92
 +  ScheduleUpdate();
 +}
 +
++std::string WorkspaceController::GetRulePatternFor(
++    const tabs::TabInterface* tab) const {
++  if (!tab || IsEssential(tab)) {
++    return std::string();
++  }
++  return RulePatternForUrl(tab->GetContents()->GetLastCommittedURL());
++}
++
++bool WorkspaceController::HasRuleFor(const tabs::TabInterface* tab) const {
++  const std::string pattern = GetRulePatternFor(tab);
++  return !pattern.empty() &&
++         std::ranges::contains(GetRules(*browser_->GetProfile()->GetPrefs()),
++                               WorkspaceRule{pattern, GetWorkspaceIdOf(tab)});
++}
++
++void WorkspaceController::ToggleRuleFor(const tabs::TabInterface* tab) {
++  const std::string pattern = GetRulePatternFor(tab);
++  if (pattern.empty()) {
++    return;
++  }
++  PrefService& prefs = *browser_->GetProfile()->GetPrefs();
++  if (HasRuleFor(tab)) {
++    RemoveRule(prefs, pattern);
++  } else {
++    SetRule(prefs, pattern, GetWorkspaceIdOf(tab));
++  }
++}
++
 +bool WorkspaceController::IsFilteringTabs() const {
 +  const auto* state = tabs::VerticalTabStripStateController::From(browser_);
 +  return state && state->ShouldDisplayVerticalTabs();
@@ -1285,6 +1429,71 @@ index 000000000..dea096d92
 +    const std::string& id) const {
 +  const auto it = std::ranges::find(workspaces_, id, &Workspace::id);
 +  return it == workspaces_.end() ? nullptr : &*it;
++}
++
++std::string WorkspaceController::GetRuleWorkspace(
++    const tabs::TabInterface* tab,
++    const GURL& url) const {
++  const PrefService& prefs = *browser_->GetProfile()->GetPrefs();
++  if (!prefs.GetBoolean(prefs::kHeliumWorkspaceRulesEnabled) ||
++      tab->IsPinned() || tab->GetGroup() || tab->GetSplit()) {
++    return std::string();
++  }
++  std::vector<WorkspaceRule> rules = GetRules(prefs);
++  std::erase_if(rules, [this](const WorkspaceRule& rule) {
++    return !FindWorkspace(rule.workspace_id);
++  });
++  const std::optional<WorkspaceRule> rule = MatchRule(rules, url);
++  return rule ? rule->workspace_id : std::string();
++}
++
++std::string WorkspaceController::GetInsertedTabWorkspace(
++    tabs::TabInterface* tab) {
++  content::WebContents* contents = tab->GetContents();
++  if (IsRestoring() || !contents->GetController().IsInitialNavigation()) {
++    return GetWorkspaceIdOf(tab);
++  }
++  const content::NavigationEntry* pending =
++      contents->GetController().GetPendingEntry();
++  const GURL url = pending ? pending->GetURL() : contents->GetVisibleURL();
++  if (url.is_empty() || url.IsAboutBlank()) {
++    first_navigation_observers_[tab->GetHandle()] =
++        std::make_unique<FirstNavigationObserver>(this, tab);
++    return GetWorkspaceIdOf(tab);
++  }
++  const std::string rule_workspace = GetRuleWorkspace(tab, url);
++  return rule_workspace.empty() ? GetWorkspaceIdOf(tab) : rule_workspace;
++}
++
++void WorkspaceController::OnFirstNavigation(tabs::TabHandle handle,
++                                            const GURL& url) {
++  const auto observer = first_navigation_observers_.extract(handle);
++  tabs::TabInterface* tab = handle.Get();
++  if (!model_ || !tab || model_->GetIndexOfTab(tab) == TabStripModel::kNoTab) {
++    return;
++  }
++  const std::string id = GetRuleWorkspace(tab, url);
++  if (id.empty() || id == GetWorkspaceIdOf(tab)) {
++    return;
++  }
++  const std::string previous = active_;
++  tab_workspaces_[handle] = id;
++  if (tab == model_->GetActiveTab()) {
++    if (ShouldFollowRule()) {
++      SetActive(id);
++    } else {
++      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE, base::BindOnce(&WorkspaceController::ActivateWorkspace,
++                                    weak_factory_.GetWeakPtr(), previous));
++    }
++  }
++  NotifyWorkspacesChanged();
++  ScheduleUpdate();
++}
++
++bool WorkspaceController::ShouldFollowRule() const {
++  return browser_->GetProfile()->GetPrefs()->GetBoolean(
++      prefs::kHeliumWorkspaceRulesFollow);
 +}
 +
 +std::string WorkspaceController::GetWorkspaceIdOf(
@@ -1458,24 +1667,35 @@ index 000000000..dea096d92
 +    TabStripModel* model,
 +    const TabStripModelChange& change,
 +    const TabStripSelectionChange& selection) {
++  bool stays_in_workspace = false;
 +  if (change.type() == TabStripModelChange::kInserted) {
 +    for (const auto& inserted : change.GetInsert()->contents) {
 +      const std::string restored =
 +          chrome::TakeRestoredWorkspaceId(inserted.contents);
-+      tab_workspaces_[inserted.tab->GetHandle()] =
-+          FindWorkspace(restored) ? restored : GetWorkspaceIdOf(inserted.tab);
++      const std::string id = FindWorkspace(restored)
++                                 ? restored
++                                 : GetInsertedTabWorkspace(inserted.tab);
++      tab_workspaces_[inserted.tab->GetHandle()] = id;
++      stays_in_workspace |= inserted.tab == selection.new_tab &&
++                            id != active_ && id != kEssentialsId &&
++                            !ShouldFollowRule();
 +    }
 +  } else if (change.type() == TabStripModelChange::kRemoved) {
 +    for (const auto& removed : change.GetRemove()->contents) {
 +      std::erase(activation_order_, removed.tab->GetHandle());
 +      tab_workspaces_.erase(removed.tab->GetHandle());
++      first_navigation_observers_.erase(removed.tab->GetHandle());
 +    }
 +  }
 +  if (selection.active_tab_changed() && selection.new_tab) {
 +    const auto handle = selection.new_tab->GetHandle();
 +    std::erase(activation_order_, handle);
 +    activation_order_.push_back(handle);
-+    if (!IsRestoring()) {
++    if (stays_in_workspace) {
++      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE, base::BindOnce(&WorkspaceController::ActivateWorkspace,
++                                    weak_factory_.GetWeakPtr(), active_));
++    } else if (!IsRestoring()) {
 +      SetActive(GetWorkspaceIdOf(selection.new_tab));
 +    }
 +  }
@@ -1515,10 +1735,10 @@ index 000000000..dea096d92
 +}  // namespace workspaces
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.h b/chrome/browser/ui/workspaces/workspace_controller.h
 new file mode 100644
-index 000000000..a72deb345
+index 000000000..ff3d31f2b
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.h
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,216 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1528,6 +1748,7 @@ index 000000000..a72deb345
 +
 +#include <array>
 +#include <map>
++#include <memory>
 +#include <string>
 +#include <string_view>
 +#include <vector>
@@ -1543,6 +1764,7 @@ index 000000000..a72deb345
 +#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 +
 +class BrowserWindowInterface;
++class GURL;
 +class Profile;
 +
 +namespace workspaces {
@@ -1611,6 +1833,8 @@ index 000000000..a72deb345
 +
 +  static WorkspaceController* From(BrowserWindowInterface* browser);
 +
++  BrowserWindowInterface* browser() const { return browser_; }
++
 +  // Serializes `workspaces` with `active` id into the window extra data format.
 +  static std::string Serialize(const std::vector<Workspace>& workspaces,
 +                               const std::string& active);
@@ -1650,6 +1874,14 @@ index 000000000..a72deb345
 +  void SetEssential(const std::vector<tabs::TabInterface*>& tabs,
 +                    bool essential);
 +
++  // Returns the site pattern of a rule that opens `tab`'s site in its
++  // workspace, or an empty string if `tab` can't have such a rule.
++  std::string GetRulePatternFor(const tabs::TabInterface* tab) const;
++  // Returns true if new tabs of `tab`'s site already open in its workspace.
++  bool HasRuleFor(const tabs::TabInterface* tab) const;
++  // Adds or removes the rule that opens `tab`'s site in its workspace.
++  void ToggleRuleFor(const tabs::TabInterface* tab);
++
 +  // Returns true if workspaces currently hide tabs of inactive workspaces.
 +  bool IsFilteringTabs() const;
 +  bool IsTabVisible(const tabs::TabInterface* tab) const;
@@ -1659,7 +1891,18 @@ index 000000000..a72deb345
 +  void RemoveObserver(Observer* observer);
 +
 + private:
++  class FirstNavigationObserver;
++
 +  const Workspace* FindWorkspace(const std::string& id) const;
++  // Returns the workspace whose rule matches `url` for a new tab, or an empty
++  // string if no rule applies.
++  std::string GetRuleWorkspace(const tabs::TabInterface* tab,
++                               const GURL& url) const;
++  // Picks the workspace of a tab that was just inserted. Tabs opened by pages
++  // get their URL later, so they are matched on their first navigation.
++  std::string GetInsertedTabWorkspace(tabs::TabInterface* tab);
++  void OnFirstNavigation(tabs::TabHandle handle, const GURL& url);
++  bool ShouldFollowRule() const;
 +  std::string GetWorkspaceIdOf(const tabs::TabInterface* tab) const;
 +  void SetActive(const std::string& id);
 +  void ActivateRelativeWorkspace(int offset);
@@ -1695,6 +1938,8 @@ index 000000000..a72deb345
 +  std::map<tabs::TabHandle, std::string> persisted_tab_workspaces_;
 +  std::string persisted_window_;
 +  std::vector<tabs::TabHandle> activation_order_;
++  std::map<tabs::TabHandle, std::unique_ptr<FirstNavigationObserver>>
++      first_navigation_observers_;
 +  bool update_pending_ = false;
 +  bool updating_ = false;
 +  base::CallbackListSubscription mode_subscription_;
@@ -2047,15 +2292,281 @@ index 000000000..9d6266972
 +}
 +
 +}  // namespace workspaces
+diff --git a/chrome/browser/ui/workspaces/workspace_rules.cc b/chrome/browser/ui/workspaces/workspace_rules.cc
+new file mode 100644
+index 000000000..a4dbea27a
+--- /dev/null
++++ b/chrome/browser/ui/workspaces/workspace_rules.cc
+@@ -0,0 +1,177 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/workspaces/workspace_rules.h"
++
++#include <algorithm>
++#include <utility>
++
++#include "base/strings/pattern.h"
++#include "base/strings/strcat.h"
++#include "base/strings/string_util.h"
++#include "base/values.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "url/gurl.h"
++
++namespace workspaces {
++
++namespace {
++
++constexpr char kPatternKey[] = "pattern";
++constexpr char kWorkspaceKey[] = "workspace";
++constexpr int kExactHostScore = 1000;
++
++std::pair<std::string_view, std::string_view> SplitPattern(
++    std::string_view pattern) {
++  const size_t slash = pattern.find('/');
++  if (slash == std::string_view::npos) {
++    return {pattern, {}};
++  }
++  return {pattern.substr(0, slash), pattern.substr(slash)};
++}
++
++bool IsHostChar(char c) {
++  return base::IsAsciiAlphaNumeric(c) || c == '.' || c == '-' || c == '*';
++}
++
++// Returns how specific `pattern` is if it matches `host` and `path`, -1
++// otherwise.
++int MatchScore(std::string_view pattern,
++               std::string_view host,
++               std::string_view path) {
++  const auto [pattern_host, pattern_path] = SplitPattern(pattern);
++  const bool host_mask = pattern_host.find('*') != std::string_view::npos;
++  if (host_mask ? !base::MatchPattern(host, pattern_host)
++                : host != pattern_host &&
++                      !host.ends_with(base::StrCat({".", pattern_host}))) {
++    return -1;
++  }
++  if (!pattern_path.empty()) {
++    const bool matches =
++        pattern_path.find('*') != std::string_view::npos
++            ? base::MatchPattern(path, pattern_path)
++            : path == pattern_path ||
++                  (path.starts_with(pattern_path) &&
++                   (pattern_path.ends_with('/') ||
++                    path[pattern_path.size()] == '/'));
++    if (!matches) {
++      return -1;
++    }
++  }
++  return (host_mask ? 0 : kExactHostScore) +
++         static_cast<int>(std::ranges::count_if(
++             pattern, [](char c) { return c != '*'; }));
++}
++
++}  // namespace
++
++std::optional<std::string> NormalizeRulePattern(std::string_view pattern) {
++  std::string text =
++      base::ToLowerASCII(base::TrimWhitespaceASCII(pattern, base::TRIM_ALL));
++  if (const size_t scheme = text.find("://"); scheme != std::string::npos) {
++    text.erase(0, scheme + 3);
++  }
++  if (text.ends_with('/') && text.find('/') == text.size() - 1) {
++    text.pop_back();
++  }
++  const auto [host, path] = SplitPattern(text);
++  const bool host_has_name = std::ranges::any_of(
++      host, [](char c) { return c != '.' && c != '*'; });
++  const bool path_is_valid = std::ranges::none_of(path, [](char c) {
++    return base::IsAsciiWhitespace(c) || c == '?' || c == '#' || c == '\\';
++  });
++  if (!host_has_name || !std::ranges::all_of(host, IsHostChar) ||
++      !path_is_valid) {
++    return std::nullopt;
++  }
++  return text;
++}
++
++std::string RulePatternForUrl(const GURL& url) {
++  if (!url.SchemeIsHTTPOrHTTPS()) {
++    return std::string();
++  }
++  std::string_view host = url.host();
++  if (host.starts_with("www.")) {
++    host.remove_prefix(4);
++  }
++  return NormalizeRulePattern(host).value_or(std::string());
++}
++
++std::optional<WorkspaceRule> MatchRule(const std::vector<WorkspaceRule>& rules,
++                                       const GURL& url) {
++  if (!url.SchemeIsHTTPOrHTTPS()) {
++    return std::nullopt;
++  }
++  const std::string path = base::ToLowerASCII(url.path());
++  const WorkspaceRule* best = nullptr;
++  int best_score = -1;
++  for (const WorkspaceRule& rule : rules) {
++    const int score = MatchScore(rule.pattern, url.host(), path);
++    if (score > best_score) {
++      best = &rule;
++      best_score = score;
++    }
++  }
++  return best ? std::optional<WorkspaceRule>(*best) : std::nullopt;
++}
++
++std::vector<WorkspaceRule> GetRules(const PrefService& prefs) {
++  std::vector<WorkspaceRule> rules;
++  for (const base::Value& value :
++       prefs.GetList(prefs::kHeliumWorkspaceRules)) {
++    const base::DictValue* dict = value.GetIfDict();
++    const std::string* pattern = dict ? dict->FindString(kPatternKey) : nullptr;
++    const std::string* workspace =
++        dict ? dict->FindString(kWorkspaceKey) : nullptr;
++    if (pattern && workspace) {
++      rules.push_back({*pattern, *workspace});
++    }
++  }
++  return rules;
++}
++
++bool SetRule(PrefService& prefs,
++             std::string_view pattern,
++             const std::string& workspace_id) {
++  const std::optional<std::string> normalized = NormalizeRulePattern(pattern);
++  if (!normalized || workspace_id.empty()) {
++    return false;
++  }
++  ScopedListPrefUpdate update(&prefs, prefs::kHeliumWorkspaceRules);
++  update->EraseIf([&normalized](const base::Value& value) {
++    const base::DictValue* dict = value.GetIfDict();
++    const std::string* existing =
++        dict ? dict->FindString(kPatternKey) : nullptr;
++    return existing && *existing == *normalized;
++  });
++  update->Append(base::DictValue()
++                     .Set(kPatternKey, *normalized)
++                     .Set(kWorkspaceKey, workspace_id));
++  return true;
++}
++
++void RemoveRule(PrefService& prefs, std::string_view pattern) {
++  ScopedListPrefUpdate update(&prefs, prefs::kHeliumWorkspaceRules);
++  update->EraseIf([pattern](const base::Value& value) {
++    const base::DictValue* dict = value.GetIfDict();
++    const std::string* existing =
++        dict ? dict->FindString(kPatternKey) : nullptr;
++    return existing && *existing == pattern;
++  });
++}
++
++void RemoveRulesOf(PrefService& prefs, const std::string& workspace_id) {
++  ScopedListPrefUpdate update(&prefs, prefs::kHeliumWorkspaceRules);
++  update->EraseIf([&workspace_id](const base::Value& value) {
++    const base::DictValue* dict = value.GetIfDict();
++    const std::string* existing =
++        dict ? dict->FindString(kWorkspaceKey) : nullptr;
++    return existing && *existing == workspace_id;
++  });
++}
++
++}  // namespace workspaces
+diff --git a/chrome/browser/ui/workspaces/workspace_rules.h b/chrome/browser/ui/workspaces/workspace_rules.h
+new file mode 100644
+index 000000000..abb2b4561
+--- /dev/null
++++ b/chrome/browser/ui/workspaces/workspace_rules.h
+@@ -0,0 +1,52 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_WORKSPACES_WORKSPACE_RULES_H_
++#define CHROME_BROWSER_UI_WORKSPACES_WORKSPACE_RULES_H_
++
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++class GURL;
++class PrefService;
++
++namespace workspaces {
++
++// Opens new tabs of sites matching `pattern` in the workspace `workspace_id`.
++// A pattern is a host with an optional path. A host without `*` also matches
++// its subdomains, `*` matches any text.
++struct WorkspaceRule {
++  std::string pattern;
++  std::string workspace_id;
++
++  bool operator==(const WorkspaceRule&) const = default;
++};
++
++// Returns `pattern` trimmed, lowercased and without a scheme, or nullopt if it
++// is not a valid pattern.
++std::optional<std::string> NormalizeRulePattern(std::string_view pattern);
++
++// Returns the pattern a new rule for `url` uses: its host without "www.".
++// Empty for URLs that are not http or https.
++std::string RulePatternForUrl(const GURL& url);
++
++// Returns the most specific rule that matches `url`: a host without `*` beats
++// a mask, then the longer pattern wins.
++std::optional<WorkspaceRule> MatchRule(const std::vector<WorkspaceRule>& rules,
++                                       const GURL& url);
++
++std::vector<WorkspaceRule> GetRules(const PrefService& prefs);
++// Adds a rule, or moves the rule with the same pattern to `workspace_id`.
++// Returns false if `pattern` is invalid.
++bool SetRule(PrefService& prefs,
++             std::string_view pattern,
++             const std::string& workspace_id);
++void RemoveRule(PrefService& prefs, std::string_view pattern);
++void RemoveRulesOf(PrefService& prefs, const std::string& workspace_id);
++
++}  // namespace workspaces
++
++#endif  // CHROME_BROWSER_UI_WORKSPACES_WORKSPACE_RULES_H_
+diff --git a/chrome/common/pref_names.h b/chrome/common/pref_names.h
+index 258a0527f..cffc57431 100644
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -637,6 +637,19 @@ inline constexpr char kHeliumVerticalRightAligned[] =
+ // A boolean pref set to true if zen mode is enabled.
+ inline constexpr char kHeliumZenMode[] = "helium.browser.zen_mode";
+ 
++// A list of workspace rules, each a dictionary with a site "pattern" and the
++// "workspace" id where new tabs of matching sites open.
++inline constexpr char kHeliumWorkspaceRules[] = "helium.workspaces.rules";
++
++// A boolean pref set to true if new tabs move to the workspace of their rule.
++inline constexpr char kHeliumWorkspaceRulesEnabled[] =
++    "helium.workspaces.rules_enabled";
++
++// A boolean pref set to true if a new foreground tab moved by a rule also
++// switches to its workspace.
++inline constexpr char kHeliumWorkspaceRulesFollow[] =
++    "helium.workspaces.rules_follow";
++
+ // A boolean pref set to true if the VTS is pinned (non-floating) in zen mode.
+ inline constexpr char kHeliumZenModeSidebarPinned[] =
+     "helium.browser.zen_mode_sidebar_pinned";
 diff --git a/components/tabs/public/tab_context_menu_command.h b/components/tabs/public/tab_context_menu_command.h
-index c0840963f..6a098cdfb 100644
+index c0840963f..54f7d7340 100644
 --- a/components/tabs/public/tab_context_menu_command.h
 +++ b/components/tabs/public/tab_context_menu_command.h
-@@ -42,6 +42,7 @@ enum TabContextMenuCommand {
+@@ -42,6 +42,8 @@ enum TabContextMenuCommand {
    CommandToggleFocusGroup,
    CommandDiscard,
    CommandToggleTabMuted,
 +  CommandToggleEssential,
++  CommandToggleWorkspaceRule,
  };
  // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/histograms.xml:TabContextMenuCommand)
  

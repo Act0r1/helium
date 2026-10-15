@@ -379,3 +379,4 @@ helium-ws/disable-browser-updates.patch
 helium-ws/argon-dark-theme.patch
 helium-ws/reader-mode.patch
 helium-ws/zen-mode-no-top-border.patch
+helium-ws/workspaces-settings.patch

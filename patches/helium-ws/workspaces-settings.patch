@@ -1,0 +1,972 @@
+diff --git a/chrome/browser/resources/settings/BUILD.gn b/chrome/browser/resources/settings/BUILD.gn
+index a998b4dd0..a2ea531ad 100644
+--- a/chrome/browser/resources/settings/BUILD.gn
++++ b/chrome/browser/resources/settings/BUILD.gn
+@@ -424,6 +424,9 @@ build_webui("build") {
+     "time.ts",
+     "tooltip_mixin.ts",
+     "tooltip_mixin_lit.ts",
++    "workspaces_page/workspaces_browser_proxy.ts",
++    "workspaces_page/workspaces_page.html.ts",
++    "workspaces_page/workspaces_page.ts",
+   ]
+ 
+   if (is_chromeos) {
+@@ -597,6 +600,7 @@ build_webui("build") {
+     "site_settings/clear_storage_dialog_shared.css",
+     "site_settings/site_settings_shared.css",
+     "system_page/system_page.css",
++    "workspaces_page/workspaces_page.css",
+   ]
+ 
+   mojo_files_deps = [
+diff --git a/chrome/browser/resources/settings/page_visibility.ts b/chrome/browser/resources/settings/page_visibility.ts
+index feff9bdf6..5fd343034 100644
+--- a/chrome/browser/resources/settings/page_visibility.ts
++++ b/chrome/browser/resources/settings/page_visibility.ts
+@@ -23,6 +23,7 @@ export interface PageVisibility {
+   reset?: boolean;
+   safetyHub?: boolean;
+   system?: boolean;
++  workspaces?: boolean;
+   yourSavedInfo?: boolean;
+ }
+ 
+@@ -64,6 +65,7 @@ function createPageVisibility(): PageVisibility|undefined {
+     reset: false,
+     safetyHub: false,
+     system: false,
++    workspaces: false,
+     yourSavedInfo: false,
+   };
+   // </if>
+diff --git a/chrome/browser/resources/settings/route.ts b/chrome/browser/resources/settings/route.ts
+index a3a645bc4..9c3ff5eef 100644
+--- a/chrome/browser/resources/settings/route.ts
++++ b/chrome/browser/resources/settings/route.ts
+@@ -216,6 +216,12 @@ function createRoutes(): SettingsRoutes {
+     r.FONTS = r.APPEARANCE.createChild('/fonts');
+   }
+ 
++  if (visibility.workspaces !== false) {
++    r.WORKSPACES = r.BASIC.createSection(
++        '/workspaces', 'workspaces',
++        loadTimeData.getString('workspacesPageTitle'));
++  }
++
+   if (visibility.privacy !== false) {
+     r.PRIVACY = r.BASIC.createSection(
+         '/privacy', 'privacy', loadTimeData.getString('privacyPageTitle'));
+diff --git a/chrome/browser/resources/settings/router.ts b/chrome/browser/resources/settings/router.ts
+index fd42a8eda..f33b49bec 100644
+--- a/chrome/browser/resources/settings/router.ts
++++ b/chrome/browser/resources/settings/router.ts
+@@ -123,6 +123,7 @@ export interface SettingsRoutes {
+   SYSTEM: Route;
+   TRAVEL: Route;
+   TRIGGERED_RESET_DIALOG: Route;
++  WORKSPACES: Route;
+   ACCOUNT: Route;
+   GOOGLE_SERVICES: Route;
+ 
+diff --git a/chrome/browser/resources/settings/settings_main/settings_main.html b/chrome/browser/resources/settings/settings_main/settings_main.html
+index 064fba2be..aea65f7f9 100644
+--- a/chrome/browser/resources/settings/settings_main/settings_main.html
++++ b/chrome/browser/resources/settings/settings_main/settings_main.html
+@@ -112,6 +112,15 @@
+     </div>
+   </template>
+ 
++  <template is="dom-if" if="[[showPage_(pageVisibility_.workspaces)]]">
++    <div slot="view" id="workspaces">
++      <template is="dom-if" if="[[renderPlugin_(
++          routes_.WORKSPACES, lastRoute_, inSearchMode_)]]">
++        <settings-workspaces-page></settings-workspaces-page>
++      </template>
++    </div>
++  </template>
++
+   <div slot="view" id="search">
+     <template is="dom-if" if="[[renderPlugin_(
+         routes_.SEARCH, lastRoute_, inSearchMode_)]]">
+diff --git a/chrome/browser/resources/settings/settings_main/settings_main.ts b/chrome/browser/resources/settings/settings_main/settings_main.ts
+index d9fd6ab2a..ba02e6ee9 100644
+--- a/chrome/browser/resources/settings/settings_main/settings_main.ts
++++ b/chrome/browser/resources/settings/settings_main/settings_main.ts
+@@ -20,6 +20,7 @@ import '../performance_page/performance_page_index.js';
+ import '../privacy_page/privacy_page_index.js';
+ import '../reset_page/reset_profile_banner.js';
+ import '../search_page/search_page_index.js';
++import '../workspaces_page/workspaces_page.js';
+ // <if expr="not is_chromeos">
+ import '../default_browser_page/default_browser_page.js';
+ 
+diff --git a/chrome/browser/resources/settings/settings_menu/settings_menu.html b/chrome/browser/resources/settings/settings_menu/settings_menu.html
+index 06df70c6f..b69d3b650 100644
+--- a/chrome/browser/resources/settings/settings_menu/settings_menu.html
++++ b/chrome/browser/resources/settings/settings_menu/settings_menu.html
+@@ -94,6 +94,13 @@
+           $i18n{appearanceBehaviorPageTitle}
+           <cr-ripple></cr-ripple>
+         </a>
++        <a role="menuitem" id="workspaces" href="/workspaces"
++            hidden="[[!pageVisibility_.workspaces]]"
++            class="cr-nav-menu-item">
++          <cr-icon icon="settings20:dashboard"></cr-icon>
++          $i18n{workspacesPageTitle}
++          <cr-ripple></cr-ripple>
++        </a>
+         <a role="menuitem" id="privacy" href="/privacy"
+             hidden="[[!pageVisibility_.privacy]]"
+             class="cr-nav-menu-item">
+diff --git a/chrome/browser/resources/settings/workspaces_page/workspaces_browser_proxy.ts b/chrome/browser/resources/settings/workspaces_page/workspaces_browser_proxy.ts
+new file mode 100644
+index 000000000..63d868f9a
+--- /dev/null
++++ b/chrome/browser/resources/settings/workspaces_page/workspaces_browser_proxy.ts
+@@ -0,0 +1,77 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++import {sendWithPromise} from 'chrome://resources/js/cr.js';
++
++export interface WorkspaceInfo {
++  id: string;
++  name: string;
++  icon: string;
++}
++
++export interface WorkspaceRule {
++  pattern: string;
++  workspace: string;
++}
++
++export interface WorkspaceRulesState {
++  enabled: boolean;
++  follow: boolean;
++  // Workspaces of the window that shows the settings page.
++  workspaces: WorkspaceInfo[];
++  rules: WorkspaceRule[];
++}
++
++export interface WorkspacesBrowserProxy {
++  getState(): Promise<WorkspaceRulesState>;
++  setEnabled(enabled: boolean): void;
++  setFollow(follow: boolean): void;
++  // Resolves to false if `pattern` is not a valid rule.
++  addRule(pattern: string, workspaceId: string): Promise<boolean>;
++  removeRule(pattern: string): void;
++  // Resolves to the normalized pattern, or an empty string if it is invalid.
++  validatePattern(pattern: string): Promise<string>;
++  // Resolves to the rule that opens `url`, or null if none does.
++  matchUrl(url: string): Promise<WorkspaceRule|null>;
++}
++
++export class WorkspacesBrowserProxyImpl implements WorkspacesBrowserProxy {
++  getState() {
++    return sendWithPromise<WorkspaceRulesState>('getWorkspaceRules');
++  }
++
++  setEnabled(enabled: boolean) {
++    chrome.send('setWorkspaceRulesEnabled', [enabled]);
++  }
++
++  setFollow(follow: boolean) {
++    chrome.send('setWorkspaceRulesFollow', [follow]);
++  }
++
++  addRule(pattern: string, workspaceId: string) {
++    return sendWithPromise<boolean>('addWorkspaceRule', pattern, workspaceId);
++  }
++
++  removeRule(pattern: string) {
++    chrome.send('removeWorkspaceRule', [pattern]);
++  }
++
++  validatePattern(pattern: string) {
++    return sendWithPromise<string>('validateWorkspaceRulePattern', pattern);
++  }
++
++  matchUrl(url: string) {
++    return sendWithPromise<WorkspaceRule|null>('matchWorkspaceRuleUrl', url);
++  }
++
++  static getInstance(): WorkspacesBrowserProxy {
++    return instance || (instance = new WorkspacesBrowserProxyImpl());
++  }
++
++  static setInstance(obj: WorkspacesBrowserProxy) {
++    instance = obj;
++  }
++}
++
++let instance: WorkspacesBrowserProxy|null = null;
+diff --git a/chrome/browser/resources/settings/workspaces_page/workspaces_page.css b/chrome/browser/resources/settings/workspaces_page/workspaces_page.css
+new file mode 100644
+index 000000000..19c8039e4
+--- /dev/null
++++ b/chrome/browser/resources/settings/workspaces_page/workspaces_page.css
+@@ -0,0 +1,88 @@
++/* Copyright 2026 The Helium Authors
++ * You can use, redistribute, and/or modify this source code under
++ * the terms of the GPL-3.0 license that can be found in the LICENSE file. */
++
++/* #css_wrapper_metadata_start
++ * #type=style-lit
++ * #import=chrome://resources/cr_elements/cr_shared_style_lit.css.js
++ * #import=chrome://resources/cr_elements/md_select_lit.css.js
++ * #import=../settings_shared_lit.css.js
++ * #include=cr-shared-style-lit settings-shared-lit md-select-lit
++ * #css_wrapper_metadata_end */
++
++.list {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++  padding: 0 var(--cr-section-padding) 16px;
++}
++
++.list[inert] {
++  opacity: 0.5;
++}
++
++.workspace {
++  border: 1px solid var(--cr-separator-color);
++  border-radius: 8px;
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++  padding: 10px 12px;
++  transition: border-color 200ms, background-color 200ms;
++}
++
++.workspace[highlighted] {
++  background-color: var(--cr-hover-background-color);
++  border-color: var(--cr-focus-outline-color);
++}
++
++.workspace-name {
++  font-weight: 500;
++}
++
++.chips {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 6px;
++}
++
++.chip {
++  align-items: center;
++  background-color: var(--cr-hover-background-color);
++  border-radius: 14px;
++  display: inline-flex;
++  gap: 2px;
++  height: 28px;
++  padding-inline-start: 12px;
++}
++
++.chip .pattern {
++  font-family: monospace;
++}
++
++.chip cr-icon-button {
++  --cr-icon-button-icon-size: 14px;
++  --cr-icon-button-size: 26px;
++}
++
++.add {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++  margin-top: 8px;
++}
++
++.add-row {
++  align-items: flex-start;
++  display: flex;
++  gap: 8px;
++}
++
++.add-row .md-select {
++  flex: none;
++  width: auto;
++}
++
++.hint {
++  min-height: 1.5em;
++}
+diff --git a/chrome/browser/resources/settings/workspaces_page/workspaces_page.html.ts b/chrome/browser/resources/settings/workspaces_page/workspaces_page.html.ts
+new file mode 100644
+index 000000000..458b8da04
+--- /dev/null
++++ b/chrome/browser/resources/settings/workspaces_page/workspaces_page.html.ts
+@@ -0,0 +1,112 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++import {html} from '//resources/lit/v3_0/lit.rollup.js';
++
++import type {SettingsWorkspacesPageElement} from './workspaces_page.js';
++
++export function getHtml(this: SettingsWorkspacesPageElement) {
++  // clang-format off
++  return html`<!--_html_template_start_-->
++<settings-section page-title="$i18n{workspacesPageTitle}"
++    class="cr-centered-card-container">
++  <div class="cr-row first">
++    <div class="flex cr-padded-text">
++      <div>$i18n{workspaceRulesEnabled}</div>
++      <div class="secondary">$i18n{workspaceRulesEnabledSublabel}</div>
++    </div>
++    <cr-toggle id="enabledToggle" ?checked="${this.state_.enabled}"
++        aria-label="$i18n{workspaceRulesEnabled}"
++        @change="${this.onEnabledChange_}">
++    </cr-toggle>
++  </div>
++  <div class="cr-row">
++    <div class="flex cr-padded-text">
++      <div>$i18n{workspaceRulesFollow}</div>
++      <div class="secondary">$i18n{workspaceRulesFollowSublabel}</div>
++    </div>
++    <cr-toggle id="followToggle" ?checked="${this.state_.follow}"
++        ?disabled="${!this.state_.enabled}"
++        aria-label="$i18n{workspaceRulesFollow}"
++        @change="${this.onFollowChange_}">
++    </cr-toggle>
++  </div>
++
++  <div class="cr-row continuation">
++    <h2 class="cr-title-text">$i18n{workspaceRules}</h2>
++  </div>
++  <div class="list" ?inert="${!this.state_.enabled}">
++    ${this.getGroups_().map(group => html`
++      <div class="workspace" ?highlighted="${group.highlighted}"
++          data-workspace-id="${group.id}">
++        <div class="workspace-name">${group.label}</div>
++        ${group.rules.length ? html`
++          <div class="chips">
++            ${group.rules.map(rule => html`
++              <span class="chip">
++                <span class="pattern">${rule.pattern}</span>
++                <cr-icon-button class="icon-clear no-overlap"
++                    title="$i18n{workspaceRulesRemove}"
++                    aria-label="$i18n{workspaceRulesRemove} ${rule.pattern}"
++                    data-pattern="${rule.pattern}"
++                    @click="${this.onRemoveClick_}">
++                </cr-icon-button>
++              </span>
++            `)}
++          </div>
++        ` : html`
++          <div class="secondary">$i18n{workspaceRulesEmpty}</div>
++        `}
++      </div>
++    `)}
++
++    <div class="add">
++      <div class="add-row">
++        <cr-input id="patternInput" class="flex"
++            .value="${this.newPattern_}"
++            placeholder="$i18n{workspaceRulesPattern}"
++            spellcheck="false"
++            ?invalid="${this.patternInvalid_}"
++            error-message="$i18n{workspaceRulesInvalid}"
++            @value-changed="${this.onPatternValueChanged_}"
++            @keydown="${this.onPatternKeydown_}">
++        </cr-input>
++        <select class="md-select" id="workspaceSelect"
++            aria-label="$i18n{workspaceRulesWorkspace}"
++            @change="${this.onWorkspaceSelectChange_}">
++          ${this.state_.workspaces.map(workspace => html`
++            <option value="${workspace.id}"
++                ?selected="${workspace.id === this.newWorkspace_}">
++              ${this.workspaceLabel_(workspace)}
++            </option>
++          `)}
++        </select>
++        <cr-button id="addButton" class="action-button"
++            ?disabled="${!this.canAdd_()}" @click="${this.onAddClick_}">
++          $i18n{workspaceRulesAdd}
++        </cr-button>
++      </div>
++      <div class="secondary hint" ?hidden="${this.patternInvalid_}">
++        $i18n{workspaceRulesHint}
++      </div>
++    </div>
++  </div>
++
++  <div class="cr-row continuation">
++    <h2 class="cr-title-text">$i18n{workspaceRulesCheck}</h2>
++  </div>
++  <div class="list">
++    <cr-input id="checkInput" .value="${this.checkUrl_}"
++        placeholder="$i18n{workspaceRulesCheckPlaceholder}"
++        spellcheck="false"
++        @value-changed="${this.onCheckValueChanged_}">
++    </cr-input>
++    <div id="checkResult" class="secondary hint" role="status">
++      ${this.checkResult_}
++    </div>
++  </div>
++</settings-section>
++<!--_html_template_end_-->`;
++  // clang-format on
++}
+diff --git a/chrome/browser/resources/settings/workspaces_page/workspaces_page.ts b/chrome/browser/resources/settings/workspaces_page/workspaces_page.ts
+new file mode 100644
+index 000000000..82bf9ff4b
+--- /dev/null
++++ b/chrome/browser/resources/settings/workspaces_page/workspaces_page.ts
+@@ -0,0 +1,247 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++/**
++ * @fileoverview
++ * 'settings-workspaces-page' edits the rules that open sites in a workspace.
++ */
++import 'chrome://resources/cr_elements/cr_button/cr_button.js';
++import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
++import 'chrome://resources/cr_elements/cr_input/cr_input.js';
++import 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
++import '../settings_page/settings_section.js';
++
++import type {CrToggleElement} from 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
++import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
++import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
++
++import {loadTimeData} from '../i18n_setup.js';
++import {routes} from '../route.js';
++import {RouteObserverMixinLit, Router} from '../router.js';
++import type {Route} from '../router.js';
++import {getSearchManager} from '../search_settings.js';
++import type {SettingsPlugin} from '../settings_main/settings_plugin.js';
++
++import type {WorkspaceInfo, WorkspaceRule, WorkspaceRulesState, WorkspacesBrowserProxy} from './workspaces_browser_proxy.js';
++import {WorkspacesBrowserProxyImpl} from './workspaces_browser_proxy.js';
++import {getCss} from './workspaces_page.css.js';
++import {getHtml} from './workspaces_page.html.js';
++
++interface RuleGroup {
++  id: string;
++  label: string;
++  highlighted: boolean;
++  rules: WorkspaceRule[];
++}
++
++const SettingsWorkspacesPageElementBase =
++    RouteObserverMixinLit(WebUiListenerMixinLit(CrLitElement));
++
++export class SettingsWorkspacesPageElement extends
++    SettingsWorkspacesPageElementBase implements SettingsPlugin {
++  static get is() {
++    return 'settings-workspaces-page';
++  }
++
++  static override get styles() {
++    return getCss();
++  }
++
++  override render() {
++    return getHtml.bind(this)();
++  }
++
++  static override get properties() {
++    return {
++      state_: {type: Object},
++      highlightedId_: {type: String},
++      newPattern_: {type: String},
++      newWorkspace_: {type: String},
++      patternInvalid_: {type: Boolean},
++      checkUrl_: {type: String},
++      checkResult_: {type: String},
++    };
++  }
++
++  protected accessor state_: WorkspaceRulesState =
++      {enabled: true, follow: true, workspaces: [], rules: []};
++  protected accessor highlightedId_: string = '';
++  protected accessor newPattern_: string = '';
++  protected accessor newWorkspace_: string = '';
++  protected accessor patternInvalid_: boolean = false;
++  protected accessor checkUrl_: string = '';
++  protected accessor checkResult_: string = '';
++
++  private browserProxy_: WorkspacesBrowserProxy =
++      WorkspacesBrowserProxyImpl.getInstance();
++
++  override connectedCallback() {
++    super.connectedCallback();
++    this.addWebUiListener(
++        'workspace-rules-changed', this.onStateChanged_.bind(this));
++    document.addEventListener('visibilitychange', this.onVisibilityChange_);
++    this.refresh_();
++  }
++
++  override disconnectedCallback() {
++    super.disconnectedCallback();
++    document.removeEventListener('visibilitychange', this.onVisibilityChange_);
++  }
++
++  private onVisibilityChange_ = () => {
++    if (document.visibilityState === 'visible') {
++      this.browserProxy_.getState().then(this.onStateChanged_.bind(this));
++    }
++  };
++
++  override currentRouteChanged(newRoute: Route) {
++    if (newRoute !== routes.WORKSPACES) {
++      return;
++    }
++    this.highlightedId_ =
++        Router.getInstance().getQueryParameters().get('id') || '';
++    if (this.highlightedId_) {
++      this.newWorkspace_ = this.highlightedId_;
++    }
++    this.refresh_();
++  }
++
++  private async refresh_() {
++    this.onStateChanged_(await this.browserProxy_.getState());
++    if (this.highlightedId_) {
++      await this.updateComplete;
++      this.shadowRoot.querySelector(`[data-workspace-id="${
++                           CSS.escape(this.highlightedId_)}"]`)
++          ?.scrollIntoView({block: 'center'});
++    }
++  }
++
++  private onStateChanged_(state: WorkspaceRulesState) {
++    this.state_ = state;
++    if (!state.workspaces.some(w => w.id === this.newWorkspace_)) {
++      this.newWorkspace_ = state.workspaces[0]?.id || '';
++    }
++    this.updateCheckResult_();
++  }
++
++  // Rules grouped by the workspaces of this window, then a group for
++  // workspaces of other windows if any rule points there.
++  protected getGroups_(): RuleGroup[] {
++    const groups: RuleGroup[] = this.state_.workspaces.map(workspace => ({
++      id: workspace.id,
++      label: this.workspaceLabel_(workspace),
++      highlighted: workspace.id === this.highlightedId_,
++      rules: this.state_.rules.filter(rule => rule.workspace === workspace.id),
++    }));
++    const foreign = this.state_.rules.filter(
++        rule => !this.state_.workspaces.some(w => w.id === rule.workspace));
++    if (foreign.length) {
++      groups.push({
++        id: '',
++        label: loadTimeData.getString('workspaceRulesOtherWindows'),
++        highlighted: false,
++        rules: foreign,
++      });
++    }
++    return groups;
++  }
++
++  protected workspaceLabel_(workspace: WorkspaceInfo): string {
++    return `${workspace.icon} ${workspace.name}`;
++  }
++
++  protected onEnabledChange_(e: Event) {
++    this.browserProxy_.setEnabled((e.target as CrToggleElement).checked);
++  }
++
++  protected onFollowChange_(e: Event) {
++    this.browserProxy_.setFollow((e.target as CrToggleElement).checked);
++  }
++
++  protected onRemoveClick_(e: Event) {
++    const pattern = (e.currentTarget as HTMLElement).dataset['pattern'];
++    if (pattern) {
++      this.browserProxy_.removeRule(pattern);
++    }
++  }
++
++  protected async onPatternValueChanged_(e: CustomEvent<{value: string}>) {
++    const value = e.detail.value;
++    this.newPattern_ = value;
++    const normalized =
++        value.trim() ? await this.browserProxy_.validatePattern(value) : '';
++    if (value === this.newPattern_) {
++      this.patternInvalid_ = !!value.trim() && !normalized;
++    }
++  }
++
++  protected onWorkspaceSelectChange_(e: Event) {
++    this.newWorkspace_ = (e.target as HTMLSelectElement).value;
++  }
++
++  protected canAdd_(): boolean {
++    return !!this.newPattern_.trim() && !this.patternInvalid_ &&
++        !!this.newWorkspace_;
++  }
++
++  protected async onAddClick_() {
++    if (!this.canAdd_()) {
++      return;
++    }
++    if (await this.browserProxy_.addRule(
++            this.newPattern_, this.newWorkspace_)) {
++      this.newPattern_ = '';
++    } else {
++      this.patternInvalid_ = true;
++    }
++  }
++
++  protected onPatternKeydown_(e: KeyboardEvent) {
++    if (e.key === 'Enter') {
++      this.onAddClick_();
++    }
++  }
++
++  protected onCheckValueChanged_(e: CustomEvent<{value: string}>) {
++    this.checkUrl_ = e.detail.value;
++    this.updateCheckResult_();
++  }
++
++  private async updateCheckResult_() {
++    const url = this.checkUrl_.trim();
++    if (!url) {
++      this.checkResult_ = '';
++      return;
++    }
++    const rule = await this.browserProxy_.matchUrl(url);
++    if (url !== this.checkUrl_.trim()) {
++      return;
++    }
++    if (!rule) {
++      this.checkResult_ = loadTimeData.getString('workspaceRulesCheckNoMatch');
++      return;
++    }
++    const workspace = this.state_.workspaces.find(w => w.id === rule.workspace);
++    this.checkResult_ = loadTimeData.getStringF(
++        'workspaceRulesCheckMatch',
++        workspace ? this.workspaceLabel_(workspace) :
++                    loadTimeData.getString('workspaceRulesAnotherWindow'),
++        rule.pattern);
++  }
++
++  // SettingsPlugin implementation
++  async searchContents(query: string) {
++    const searchRequest = await getSearchManager().search(query, this);
++    return searchRequest.getSearchResult();
++  }
++}
++
++declare global {
++  interface HTMLElementTagNameMap {
++    'settings-workspaces-page': SettingsWorkspacesPageElement;
++  }
++}
++
++customElements.define(
++    SettingsWorkspacesPageElement.is, SettingsWorkspacesPageElement);
+diff --git a/chrome/browser/ui/webui/settings/BUILD.gn b/chrome/browser/ui/webui/settings/BUILD.gn
+index 2756796ab..ecdbfc757 100644
+--- a/chrome/browser/ui/webui/settings/BUILD.gn
++++ b/chrome/browser/ui/webui/settings/BUILD.gn
+@@ -39,6 +39,7 @@ source_set("settings") {
+     "metrics_reporting_handler.h",
+     "omnibox_everywhere_settings_handler.h",
+     "on_startup_handler.h",
++    "workspaces_handler.h",
+     "password_manager_handler.h",
+     "people_handler.h",
+     "performance_handler.h",
+@@ -173,6 +174,7 @@ source_set("impl") {
+     "metrics_reporting_handler.cc",
+     "omnibox_everywhere_settings_handler.cc",
+     "on_startup_handler.cc",
++    "workspaces_handler.cc",
+     "password_manager_handler.cc",
+     "people_handler.cc",
+     "performance_handler.cc",
+diff --git a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+index 1b77e4c92..9135ec27f 100644
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -1571,6 +1571,36 @@ void AddLanguagesStrings(content::WebUIDataSource* html_source,
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ }
+ 
++void AddWorkspacesStrings(content::WebUIDataSource* html_source) {
++  static constexpr webui::LocalizedString kLocalizedStrings[] = {
++      {"workspacesPageTitle", IDS_SETTINGS_WORKSPACES},
++      {"workspaceRulesEnabled", IDS_SETTINGS_WORKSPACE_RULES_ENABLED},
++      {"workspaceRulesEnabledSublabel",
++       IDS_SETTINGS_WORKSPACE_RULES_ENABLED_SUBLABEL},
++      {"workspaceRulesFollow", IDS_SETTINGS_WORKSPACE_RULES_FOLLOW},
++      {"workspaceRulesFollowSublabel",
++       IDS_SETTINGS_WORKSPACE_RULES_FOLLOW_SUBLABEL},
++      {"workspaceRules", IDS_SETTINGS_WORKSPACE_RULES},
++      {"workspaceRulesEmpty", IDS_SETTINGS_WORKSPACE_RULES_EMPTY},
++      {"workspaceRulesOtherWindows", IDS_SETTINGS_WORKSPACE_RULES_OTHER_WINDOWS},
++      {"workspaceRulesPattern", IDS_SETTINGS_WORKSPACE_RULES_PATTERN},
++      {"workspaceRulesWorkspace", IDS_SETTINGS_WORKSPACE_RULES_WORKSPACE},
++      {"workspaceRulesAdd", IDS_SETTINGS_WORKSPACE_RULES_ADD},
++      {"workspaceRulesRemove", IDS_SETTINGS_WORKSPACE_RULES_REMOVE},
++      {"workspaceRulesHint", IDS_SETTINGS_WORKSPACE_RULES_HINT},
++      {"workspaceRulesInvalid", IDS_SETTINGS_WORKSPACE_RULES_INVALID},
++      {"workspaceRulesCheck", IDS_SETTINGS_WORKSPACE_RULES_CHECK},
++      {"workspaceRulesCheckPlaceholder",
++       IDS_SETTINGS_WORKSPACE_RULES_CHECK_PLACEHOLDER},
++      {"workspaceRulesCheckMatch", IDS_SETTINGS_WORKSPACE_RULES_CHECK_MATCH},
++      {"workspaceRulesCheckNoMatch",
++       IDS_SETTINGS_WORKSPACE_RULES_CHECK_NO_MATCH},
++      {"workspaceRulesAnotherWindow",
++       IDS_SETTINGS_WORKSPACE_RULES_ANOTHER_WINDOW},
++  };
++  html_source->AddLocalizedStrings(kLocalizedStrings);
++}
++
+ void AddOnStartupStrings(content::WebUIDataSource* html_source) {
+   static constexpr webui::LocalizedString kLocalizedStrings[] = {
+       {"onStartup", IDS_SETTINGS_ON_STARTUP},
+@@ -4733,6 +4763,7 @@ void AddLocalizedStrings(content::WebUIDataSource* html_source,
+   AddPerformanceStrings(html_source);
+   AddLanguagesStrings(html_source, profile);
+   AddOnStartupStrings(html_source);
++  AddWorkspacesStrings(html_source);
+   AddPeopleStrings(html_source, profile);
+   AddPrivacySandboxStrings(html_source, profile);
+   AddPrivacyGuideStrings(html_source, profile);
+diff --git a/chrome/browser/ui/webui/settings/settings_ui.cc b/chrome/browser/ui/webui/settings/settings_ui.cc
+index 8d856130a..bcf2594c7 100644
+--- a/chrome/browser/ui/webui/settings/settings_ui.cc
++++ b/chrome/browser/ui/webui/settings/settings_ui.cc
+@@ -78,6 +78,7 @@
+ #include "chrome/browser/ui/webui/settings/metrics_reporting_handler.h"
+ #include "chrome/browser/ui/webui/settings/omnibox_everywhere_settings_handler.h"
+ #include "chrome/browser/ui/webui/settings/on_startup_handler.h"
++#include "chrome/browser/ui/webui/settings/workspaces_handler.h"
+ #include "chrome/browser/ui/webui/settings/password_manager_handler.h"
+ #include "chrome/browser/ui/webui/settings/people_handler.h"
+ #include "chrome/browser/ui/webui/settings/performance_handler.h"
+@@ -284,6 +285,7 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
+   AddSettingsPageUIHandler(std::make_unique<OnDeviceAiSettingsHandler>());
+ #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+   AddSettingsPageUIHandler(std::make_unique<OnStartupHandler>(profile));
++  AddSettingsPageUIHandler(std::make_unique<WorkspacesHandler>(profile));
+   AddSettingsPageUIHandler(std::make_unique<PeopleHandler>(profile));
+   AddSettingsPageUIHandler(std::make_unique<ProfileInfoHandler>(profile));
+   AddSettingsPageUIHandler(std::make_unique<ProtocolHandlersHandler>(profile));
+diff --git a/chrome/browser/ui/webui/settings/workspaces_handler.cc b/chrome/browser/ui/webui/settings/workspaces_handler.cc
+new file mode 100644
+index 000000000..56f51f12f
+--- /dev/null
++++ b/chrome/browser/ui/webui/settings/workspaces_handler.cc
+@@ -0,0 +1,155 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/webui/settings/workspaces_handler.h"
++
++#include <optional>
++#include <string>
++
++#include "base/functional/bind.h"
++#include "base/strings/strcat.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/workspaces/workspace_controller.h"
++#include "chrome/browser/ui/workspaces/workspace_rules.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++#include "content/public/browser/web_ui.h"
++#include "url/gurl.h"
++
++namespace settings {
++
++namespace {
++
++// Reads a link the way a user types it: without a scheme it is https.
++GURL ParseLink(const std::string& text) {
++  const GURL url(text);
++  if (url.is_valid() && url.has_host()) {
++    return url;
++  }
++  return GURL(base::StrCat({"https://", text}));
++}
++
++}  // namespace
++
++WorkspacesHandler::WorkspacesHandler(Profile* profile) : profile_(profile) {}
++
++WorkspacesHandler::~WorkspacesHandler() = default;
++
++void WorkspacesHandler::RegisterMessages() {
++  const auto add = [this](const char* name, auto method) {
++    web_ui()->RegisterMessageCallback(
++        name, base::BindRepeating(method, base::Unretained(this)));
++  };
++  add("getWorkspaceRules", &WorkspacesHandler::HandleGetState);
++  add("setWorkspaceRulesEnabled", &WorkspacesHandler::HandleSetEnabled);
++  add("setWorkspaceRulesFollow", &WorkspacesHandler::HandleSetFollow);
++  add("addWorkspaceRule", &WorkspacesHandler::HandleAddRule);
++  add("removeWorkspaceRule", &WorkspacesHandler::HandleRemoveRule);
++  add("validateWorkspaceRulePattern",
++      &WorkspacesHandler::HandleValidatePattern);
++  add("matchWorkspaceRuleUrl", &WorkspacesHandler::HandleMatchUrl);
++}
++
++void WorkspacesHandler::OnJavascriptAllowed() {
++  pref_change_registrar_.Init(profile_->GetPrefs());
++  for (const char* pref :
++       {prefs::kHeliumWorkspaceRules, prefs::kHeliumWorkspaceRulesEnabled,
++        prefs::kHeliumWorkspaceRulesFollow}) {
++    pref_change_registrar_.Add(
++        pref, base::BindRepeating(&WorkspacesHandler::OnPrefChanged,
++                                  base::Unretained(this)));
++  }
++}
++
++void WorkspacesHandler::OnJavascriptDisallowed() {
++  pref_change_registrar_.RemoveAll();
++}
++
++base::DictValue WorkspacesHandler::CreateState() {
++  const PrefService& prefs = *profile_->GetPrefs();
++  base::ListValue workspaces;
++  BrowserWindowInterface* browser =
++      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
++          web_ui()->GetWebContents());
++  if (const auto* controller =
++          workspaces::WorkspaceController::From(browser)) {
++    for (const workspaces::Workspace& workspace : controller->GetWorkspaces()) {
++      workspaces.Append(base::DictValue()
++                            .Set("id", workspace.id)
++                            .Set("name", workspace.name)
++                            .Set("icon", workspace.icon));
++    }
++  }
++  base::ListValue rules;
++  for (const workspaces::WorkspaceRule& rule : workspaces::GetRules(prefs)) {
++    rules.Append(base::DictValue()
++                     .Set("pattern", rule.pattern)
++                     .Set("workspace", rule.workspace_id));
++  }
++  return base::DictValue()
++      .Set("enabled", prefs.GetBoolean(prefs::kHeliumWorkspaceRulesEnabled))
++      .Set("follow", prefs.GetBoolean(prefs::kHeliumWorkspaceRulesFollow))
++      .Set("workspaces", std::move(workspaces))
++      .Set("rules", std::move(rules));
++}
++
++void WorkspacesHandler::HandleGetState(const base::ListValue& args) {
++  AllowJavascript();
++  CHECK_EQ(args.size(), 1u);
++  ResolveJavascriptCallback(args[0], CreateState());
++}
++
++void WorkspacesHandler::HandleSetEnabled(const base::ListValue& args) {
++  CHECK_EQ(args.size(), 1u);
++  profile_->GetPrefs()->SetBoolean(prefs::kHeliumWorkspaceRulesEnabled,
++                                   args[0].GetBool());
++}
++
++void WorkspacesHandler::HandleSetFollow(const base::ListValue& args) {
++  CHECK_EQ(args.size(), 1u);
++  profile_->GetPrefs()->SetBoolean(prefs::kHeliumWorkspaceRulesFollow,
++                                   args[0].GetBool());
++}
++
++void WorkspacesHandler::HandleAddRule(const base::ListValue& args) {
++  AllowJavascript();
++  CHECK_EQ(args.size(), 3u);
++  ResolveJavascriptCallback(
++      args[0], workspaces::SetRule(*profile_->GetPrefs(), args[1].GetString(),
++                                   args[2].GetString()));
++}
++
++void WorkspacesHandler::HandleRemoveRule(const base::ListValue& args) {
++  CHECK_EQ(args.size(), 1u);
++  workspaces::RemoveRule(*profile_->GetPrefs(), args[0].GetString());
++}
++
++void WorkspacesHandler::HandleValidatePattern(const base::ListValue& args) {
++  AllowJavascript();
++  CHECK_EQ(args.size(), 2u);
++  const std::optional<std::string> pattern =
++      workspaces::NormalizeRulePattern(args[1].GetString());
++  ResolveJavascriptCallback(args[0], pattern.value_or(std::string()));
++}
++
++void WorkspacesHandler::HandleMatchUrl(const base::ListValue& args) {
++  AllowJavascript();
++  CHECK_EQ(args.size(), 2u);
++  const std::optional<workspaces::WorkspaceRule> rule = workspaces::MatchRule(
++      workspaces::GetRules(*profile_->GetPrefs()),
++      ParseLink(args[1].GetString()));
++  ResolveJavascriptCallback(
++      args[0], rule ? base::Value(base::DictValue()
++                                      .Set("pattern", rule->pattern)
++                                      .Set("workspace", rule->workspace_id))
++                    : base::Value());
++}
++
++void WorkspacesHandler::OnPrefChanged() {
++  FireWebUIListener("workspace-rules-changed", CreateState());
++}
++
++}  // namespace settings
+diff --git a/chrome/browser/ui/webui/settings/workspaces_handler.h b/chrome/browser/ui/webui/settings/workspaces_handler.h
+new file mode 100644
+index 000000000..6c34f2f56
+--- /dev/null
++++ b/chrome/browser/ui/webui/settings/workspaces_handler.h
+@@ -0,0 +1,47 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_WEBUI_SETTINGS_WORKSPACES_HANDLER_H_
++#define CHROME_BROWSER_UI_WEBUI_SETTINGS_WORKSPACES_HANDLER_H_
++
++#include "base/memory/raw_ptr.h"
++#include "base/values.h"
++#include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
++#include "components/prefs/pref_change_registrar.h"
++
++class Profile;
++
++namespace settings {
++
++// Lists the workspaces of the settings window and edits the rules that open
++// sites in a workspace.
++class WorkspacesHandler : public SettingsPageUIHandler {
++ public:
++  explicit WorkspacesHandler(Profile* profile);
++  WorkspacesHandler(const WorkspacesHandler&) = delete;
++  WorkspacesHandler& operator=(const WorkspacesHandler&) = delete;
++  ~WorkspacesHandler() override;
++
++  void RegisterMessages() override;
++  void OnJavascriptAllowed() override;
++  void OnJavascriptDisallowed() override;
++
++ private:
++  base::DictValue CreateState();
++  void HandleGetState(const base::ListValue& args);
++  void HandleSetEnabled(const base::ListValue& args);
++  void HandleSetFollow(const base::ListValue& args);
++  void HandleAddRule(const base::ListValue& args);
++  void HandleRemoveRule(const base::ListValue& args);
++  void HandleValidatePattern(const base::ListValue& args);
++  void HandleMatchUrl(const base::ListValue& args);
++  void OnPrefChanged();
++
++  const raw_ptr<Profile> profile_;
++  PrefChangeRegistrar pref_change_registrar_;
++};
++
++}  // namespace settings
++
++#endif  // CHROME_BROWSER_UI_WEBUI_SETTINGS_WORKSPACES_HANDLER_H_

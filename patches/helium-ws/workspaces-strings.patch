@@ -1,5 +1,5 @@
 diff --git a/chrome/app/generated_resources.grd b/chrome/app/generated_resources.grd
-index f572d1872..bb0fec636 100644
+index f572d1872..2aed6d99e 100644
 --- a/chrome/app/generated_resources.grd
 +++ b/chrome/app/generated_resources.grd
 @@ -1947,6 +1947,18 @@ are declared in tools/grit/grit_args.gni.
@@ -21,7 +21,7 @@ index f572d1872..bb0fec636 100644
        <message name="IDS_SHORTCUT_COMMAND_DUPLICATE_TAB" desc="Command name shown on the Settings shortcuts page for duplicating the current tab.">
          Duplicate tab
        </message>
-@@ -13136,6 +13148,72 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google
+@@ -13136,6 +13148,138 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google
        <message name="IDS_TAB_GROUP_HEADER_CXMENU_NEW_TAB_IN_GROUP" desc="The label of the tab group header context menu item for adding a new tab into the current group.">
          New tab in group
        </message>
@@ -90,6 +90,72 @@ index f572d1872..bb0fec636 100644
 +      </message>
 +      <message name="IDS_TAB_CXMENU_REMOVE_FROM_ESSENTIALS" desc="The label of the tab context menu item that moves Essentials back into the active workspace.">
 +        Remove from Essentials
++      </message>
++      <message name="IDS_TAB_CXMENU_ALWAYS_OPEN_SITE_IN_WORKSPACE" desc="The label of the tab context menu item that adds a rule to open new tabs of the tab's site in the tab's workspace.">
++        Always open <ph name="SITE">$1<ex>youtube.com</ex></ph> here
++      </message>
++      <message name="IDS_TAB_CXMENU_STOP_OPENING_SITE_IN_WORKSPACE" desc="The label of the tab context menu item that removes the rule that opens new tabs of the tab's site in the tab's workspace.">
++        Don't always open <ph name="SITE">$1<ex>youtube.com</ex></ph> here
++      </message>
++      <message name="IDS_WORKSPACE_RULES" desc="Menu item of a workspace that opens the settings of rules that open sites in this workspace.">
++        Rules...
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACES" desc="Title of the settings section about workspaces.">
++        Workspaces
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_ENABLED" desc="Label of the toggle that turns on rules that move tabs to workspaces.">
++        Move tabs by rules
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_ENABLED_SUBLABEL" desc="Description of the toggle that turns on rules that move tabs to workspaces.">
++        Links from other apps and new tabs go to the workspace whose rule matches. Navigating inside a tab never moves it.
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_FOLLOW" desc="Label of the toggle that switches to the workspace a tab was moved to by a rule.">
++        Switch to that workspace
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_FOLLOW_SUBLABEL" desc="Description of the toggle that switches to the workspace a tab was moved to by a rule.">
++        Off: the tab moves quietly and you stay where you are.
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES" desc="Heading of the list of rules that open sites in workspaces.">
++        Rules
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_EMPTY" desc="Shown in a workspace that has no rules.">
++        No rules
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_OTHER_WINDOWS" desc="Heading of rules for workspaces of other browser windows.">
++        Workspaces of other windows
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_PATTERN" desc="Placeholder of the field for the site of a new workspace rule.">
++        youtube.com or *.google.com/docs/*
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_WORKSPACE" desc="Accessible name of the workspace picker of a new workspace rule.">
++        Workspace
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_ADD" desc="Button that adds a workspace rule.">
++        Add rule
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_REMOVE" desc="Accessible name of the button that removes a workspace rule.">
++        Remove rule
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_HINT" desc="Hint under the field for the site of a new workspace rule.">
++        youtube.com covers all its subdomains. * matches anything.
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_INVALID" desc="Error under the field for the site of a new workspace rule.">
++        Use a site like github.com, optionally with a path or *. Spaces are not allowed.
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_CHECK" desc="Heading of the field that shows which workspace a link opens in.">
++        Check a link
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_CHECK_PLACEHOLDER" desc="Placeholder of the field that shows which workspace a link opens in.">
++        Paste a link
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_CHECK_MATCH" desc="Shows which workspace a link opens in and which rule matched.">
++        Opens in <ph name="WORKSPACE">$1<ex>Work</ex></ph> by rule <ph name="RULE">$2<ex>github.com</ex></ph>
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_CHECK_NO_MATCH" desc="Shown when no workspace rule matches a link.">
++        No rule: opens in the current workspace
++      </message>
++      <message name="IDS_SETTINGS_WORKSPACE_RULES_ANOTHER_WINDOW" desc="Name of a workspace of another browser window in the result of checking a link.">
++        a workspace of another window
 +      </message>
        <message name="IDS_TAB_GROUP_HEADER_CXMENU_HOME" desc="Home option in tab group bubble">
          Home
