@@ -376,3 +376,4 @@ helium-ws/workspaces-commands.patch
 helium-ws/ntp-shortcuts.patch
 helium-ws/argon-branding.patch
 helium-ws/disable-browser-updates.patch
+helium-ws/argon-dark-theme.patch

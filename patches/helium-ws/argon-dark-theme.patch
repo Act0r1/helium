@@ -1,0 +1,106 @@
+diff --git a/ui/color/sys_color_mixer.cc b/ui/color/sys_color_mixer.cc
+index 49635d799..7c0636686 100644
+--- a/ui/color/sys_color_mixer.cc
++++ b/ui/color/sys_color_mixer.cc
+@@ -13,6 +13,7 @@
+ #include "ui/color/color_provider_key.h"
+ #include "ui/color/color_recipe.h"
+ #include "ui/color/color_transform.h"
++#include "ui/gfx/color_utils.h"
+ 
+ namespace ui {
+ 
+@@ -115,6 +116,83 @@ void AddGrayscaleSysColorOverrides(ColorMixer& mixer,
+                                                 : kColorRefNeutral92};
+ }
+ 
++// Argon dark theme: neutral near-black surfaces and the user color used
++// as-is for accents instead of a tonal palette derived from it. Colors too dark
++// to read on the surfaces are lightened until they are.
++void AddArgonDarkSysColorOverrides(ColorMixer& mixer, SkColor accent) {
++  const SkColor kHeader = SkColorSetRGB(0x0A, 0x0A, 0x0A);
++  const SkColor kSurface = SkColorSetRGB(0x12, 0x12, 0x12);
++  accent = color_utils::BlendForMinContrast(
++               SkColorSetA(accent, SK_AlphaOPAQUE),
++               SkColorSetRGB(0x26, 0x26, 0x26))
++               .color;
++  const SkColor kRaised = SkColorSetRGB(0x1C, 0x1C, 0x1C);
++  const SkColor kHigh = SkColorSetRGB(0x26, 0x26, 0x26);
++  const SkColor kText = SkColorSetRGB(0xE6, 0xE6, 0xE6);
++  const SkColor kTextDim = SkColorSetRGB(0xA8, 0xA8, 0xA8);
++  const SkColor kLine = SkColorSetRGB(0x2E, 0x2E, 0x2E);
++
++  // Accent.
++  mixer[kColorSysPrimary] = {accent};
++  mixer[kColorSysOnPrimary] = GetColorWithMaxContrast({accent});
++  mixer[kColorSysPrimaryContainer] = {accent};
++  mixer[kColorSysOnPrimaryContainer] = GetColorWithMaxContrast({accent});
++  mixer[kColorSysSecondary] = {accent};
++  mixer[kColorSysOnSecondary] = GetColorWithMaxContrast({accent});
++  mixer[kColorSysSecondaryContainer] = AlphaBlend({accent}, {kSurface}, 0x40);
++  mixer[kColorSysOnSecondaryContainer] = {kText};
++  mixer[kColorSysTonalContainer] = AlphaBlend({accent}, {kSurface}, 0x40);
++  mixer[kColorSysOnTonalContainer] = {kText};
++  mixer[kColorSysBaseTonalContainer] = AlphaBlend({accent}, {kSurface}, 0x26);
++  mixer[kColorSysOnBaseTonalContainer] = {kText};
++  mixer[kColorSysTonalOutline] = {accent};
++  mixer[kColorSysInversePrimary] = {accent};
++
++  // Surfaces.
++  mixer[kColorSysSurface] = {kSurface};
++  mixer[kColorSysSurface1] = {SkColorSetRGB(0x16, 0x16, 0x16)};
++  mixer[kColorSysSurface2] = {SkColorSetRGB(0x1A, 0x1A, 0x1A)};
++  mixer[kColorSysSurface3] = {kRaised};
++  mixer[kColorSysSurface4] = {SkColorSetRGB(0x20, 0x20, 0x20)};
++  mixer[kColorSysSurface5] = {SkColorSetRGB(0x24, 0x24, 0x24)};
++  mixer[kColorSysSurfaceVariant] = {kHigh};
++  mixer[kColorSysSurfaceSection] = {SkColorSetRGB(0x16, 0x16, 0x16)};
++  mixer[kColorSysNeutralContainer] = {kRaised};
++  mixer[kColorSysOnSurface] = {kText};
++  mixer[kColorSysOnSurfaceVariant] = {kTextDim};
++  mixer[kColorSysOnSurfaceSecondary] = {kTextDim};
++  mixer[kColorSysOnSurfaceSubtle] = {kTextDim};
++  mixer[kColorSysOnSurfacePrimary] = {kText};
++  mixer[kColorSysOnSurfacePrimaryInactive] = {kText};
++  mixer[kColorSysOutline] = {SkColorSetRGB(0x5A, 0x5A, 0x5A)};
++  mixer[kColorSysNeutralOutline] = {SkColorSetRGB(0x4A, 0x4A, 0x4A)};
++  mixer[kColorSysDivider] = {kLine};
++
++  // Chrome surfaces.
++  mixer[kColorSysBase] = {kSurface};
++  mixer[kColorSysBaseContainer] = {kRaised};
++  mixer[kColorSysBaseContainerElevated] = {kHigh};
++  mixer[kColorSysBaseContainerOnSurface] = {kRaised};
++  mixer[kColorSysHeader] = {kHeader};
++  mixer[kColorSysHeaderInactive] = {kHeader};
++  mixer[kColorSysHeaderContainer] = {kRaised};
++  mixer[kColorSysHeaderContainerInactive] = {kRaised};
++  mixer[kColorSysOnHeaderDivider] = {kLine};
++  mixer[kColorSysOnHeaderDividerInactive] = {kLine};
++  mixer[kColorSysOnHeaderPrimary] = {kText};
++  mixer[kColorSysOnHeaderPrimaryInactive] = {kTextDim};
++  mixer[kColorSysOmniboxContainer] = {kRaised};
++
++  // States.
++  mixer[kColorSysStateFocusRing] = {accent};
++  mixer[kColorSysStateTextHighlight] = {accent};
++  mixer[kColorSysStateOnTextHighlight] = GetColorWithMaxContrast({accent});
++  mixer[kColorSysStateRipplePrimary] = SetAlpha({accent}, 0x52);
++  mixer[kColorSysStateInactiveRing] = SetAlpha({accent}, 0x8C);
++  mixer[kColorSysStateHeaderHover] = {kHigh};
++  mixer[kColorSysStateOnHeaderHover] = {kText};
++}
++
+ }  // namespace
+ 
+ void AddSysColorMixer(ColorProvider* provider, const ColorProviderKey& key) {
+@@ -413,6 +491,9 @@ void AddSysColorMixer(ColorProvider* provider, const ColorProviderKey& key) {
+                  ColorProviderKey::UserColorSource::kAccent &&
+              key.user_color.has_value()) {
+     AddThemedSysColorOverrides(mixer, key);
++    if (dark_mode) {
++      AddArgonDarkSysColorOverrides(mixer, *key.user_color);
++    }
+   }
+ }
+ 
