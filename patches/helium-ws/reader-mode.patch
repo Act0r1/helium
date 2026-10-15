@@ -1,0 +1,366 @@
+diff --git a/chrome/browser/ui/browser_actions.cc b/chrome/browser/ui/browser_actions.cc
+index 9540866af..bd9214b5f 100644
+--- a/chrome/browser/ui/browser_actions.cc
++++ b/chrome/browser/ui/browser_actions.cc
+@@ -58,6 +58,10 @@
+ #include "components/search_engines/ai_mode_button_config.h"
+ #include "components/search_engines/ai_mode_button_service.h"
+ #include "components/tab_groups/tab_group_id.h"
++#include "chrome/browser/dom_distiller/tab_utils.h"
++#include "components/dom_distiller/core/url_utils.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/common/page_zoom.h"
+ #include "ui/base/interaction/element_identifier.h"
+@@ -444,8 +448,27 @@ void BrowserActions::InitializeSidePanelActions() {
+           base::BindRepeating(
+               [](BrowserWindowInterface* bwi, actions::ActionItem* item,
+                  actions::ActionInvocationContext context) {
+-                read_anything::ReadAnythingEntryPointController::
+-                    InvokePageAction(bwi, context);
++                content::WebContents* contents =
++                    bwi->GetActiveTabInterface()->GetContents();
++                const GURL url = contents->GetLastCommittedURL();
++                if (!dom_distiller::url_utils::IsDistilledPage(url)) {
++                  DistillCurrentPageAndViewIfSuccessful(contents,
++                                                        base::DoNothing());
++                  return;
++                }
++                const GURL original_url =
++                    dom_distiller::url_utils::GetOriginalUrlFromDistillerUrl(
++                        url);
++                content::NavigationController& controller =
++                    contents->GetController();
++                if (controller.CanGoBack() &&
++                    controller.GetEntryAtOffset(-1)->GetURL() ==
++                        original_url) {
++                  controller.GoBack();
++                  return;
++                }
++                controller.LoadURL(original_url, content::Referrer(),
++                                   ui::PAGE_TRANSITION_LINK, std::string());
+               },
+               bwi))
+           .SetActionId(kActionSidePanelShowReadAnything)
+diff --git a/chrome/browser/ui/read_anything/read_anything_controller.cc b/chrome/browser/ui/read_anything/read_anything_controller.cc
+index 22dcaf88c..056aa6bb7 100644
+--- a/chrome/browser/ui/read_anything/read_anything_controller.cc
++++ b/chrome/browser/ui/read_anything/read_anything_controller.cc
+@@ -22,6 +22,8 @@
+ #include "chrome/browser/ui/side_panel/side_panel_entry.h"
+ #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
+ #include "chrome/browser/ui/side_panel/side_panel_ui.h"
++#include "chrome/browser/ui/actions/chrome_action_id.h"
++#include "chrome/browser/ui/page_action/page_action_controller.h"
+ #include "chrome/browser/ui/tabs/public/tab_features.h"
+ #include "chrome/browser/ui/tabs/tab_model.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -125,7 +127,8 @@ ReadAnythingController::ReadAnythingController(
+           &ReadAnythingController::MaybeUpdateFindBarController,
+           base::Unretained(this))));
+ 
+-  if (features::IsReadAnythingOmniboxChipEnabled()) {
++  if (tab_->GetTabFeatures()->page_action_controller()->ActionExists(
++          kActionSidePanelShowReadAnything)) {
+     omnibox_controller_ = std::make_unique<ReadAnythingOmniboxController>(tab_);
+   }
+ 
+diff --git a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
+index 94a8ce37f..d13fc9028 100644
+--- a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
++++ b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
+@@ -13,6 +13,7 @@
+ #include "chrome/browser/ui/read_anything/read_anything_side_panel_controller_utils.h"
+ #include "chrome/browser/ui/tabs/public/tab_features.h"
+ #include "chrome/browser/ui/ui_features.h"
++#include "components/dom_distiller/core/url_utils.h"
+ #include "content/public/browser/page.h"
+ #include "content/public/browser/web_contents.h"
+ #include "read_anything_entry_point_controller.h"
+@@ -25,14 +26,6 @@ ReadAnythingOmniboxController::ReadAnythingOmniboxController(
+     : tabs::ContentsObservingTabFeature(*tab),
+       PageActionObserver(kActionSidePanelShowReadAnything),
+       tab_(tab) {
+-  // This class should only be instantiated if the omnibox entrypoint is
+-  // enabled.
+-  CHECK(features::IsReadAnythingOmniboxChipEnabled());
+-
+-  read_anything::ReadAnythingEntryPointController::
+-      RegisterForSuggestReadingMode(
+-          tab_->GetBrowserWindowInterface()->GetProfile());
+-
+   RegisterAsPageActionObserver(
+       *tab_->GetTabFeatures()->page_action_controller());
+   tab_subscriptions_.push_back(tab_->RegisterWillDetach(
+@@ -91,10 +84,6 @@ void ReadAnythingOmniboxController::Activate(
+       base::UmaHistogramEnumeration(
+           "Accessibility.ReadAnything.EntryPointAfterOmnibox", open_trigger);
+     }
+-    // Hide the omnibox entrypoint now that RM is already showing.
+-    read_anything::ReadAnythingEntryPointController::UpdatePageActionVisibility(
+-        /*should_show_page_action=*/false, tab_);
+-
+     if (open_trigger == ReadAnythingOpenTrigger::kOmniboxChip) {
+       was_triggered_ = true;
+     }
+@@ -134,8 +123,8 @@ void ReadAnythingOmniboxController::OnDiscardContents(
+   tabs::ContentsObservingTabFeature::OnDiscardContents(tab, old_contents,
+                                                        new_contents);
+   LogUkm();
+-  read_anything::ReadAnythingEntryPointController::UpdatePageActionVisibility(
+-      /*should_show_page_action=*/false, tab_);
++  tab_->GetTabFeatures()->page_action_controller()->Hide(
++      kActionSidePanelShowReadAnything);
+   StopTimers();
+   was_last_checked_page_distillable_ = false;
+   was_page_checked_ = false;
+@@ -152,7 +141,7 @@ void ReadAnythingOmniboxController::PrimaryPageChanged(content::Page& page) {
+   }
+ 
+   StopTimers();
+-  UpdateIgnored(GetCurrentPageActionState().showing);
++  UpdateVisibility(false);
+   DebounceCheckSuggestion();
+ }
+ 
+@@ -183,12 +172,21 @@ void ReadAnythingOmniboxController::CheckIfShouldSuggestReadingMode() {
+     return;
+   }
+ 
+-  read_anything::ReadAnythingEntryPointController::
+-      CheckIfShouldSuggestReadingMode(
+-          tab_->GetBrowserWindowInterface(),
+-          base::BindOnce(
+-              &ReadAnythingOmniboxController::OnShouldSuggestReadingModeResult,
+-              weak_factory_.GetWeakPtr()));
++  content::WebContents* contents = tab_->GetContents();
++  const GURL& url = contents->GetLastCommittedURL();
++  if (dom_distiller::url_utils::IsDistilledPage(url)) {
++    OnShouldSuggestReadingModeResult(true);
++    return;
++  }
++  if (!dom_distiller::url_utils::IsUrlDistillable(url)) {
++    OnShouldSuggestReadingModeResult(false);
++    return;
++  }
++  RunReadabilityHeuristicsOnWebContents(
++      contents,
++      base::BindOnce(
++          &ReadAnythingOmniboxController::OnShouldSuggestReadingModeResult,
++          weak_factory_.GetWeakPtr()));
+ }
+ 
+ void ReadAnythingOmniboxController::OnShouldSuggestReadingModeResult(
+@@ -216,10 +214,13 @@ void ReadAnythingOmniboxController::UpdateVisibility(bool should_show) {
+     return;
+   }
+ 
+-  read_anything::ReadAnythingEntryPointController::UpdatePageActionVisibility(
+-      should_show, tab_,
+-      base::BindOnce(&ReadAnythingOmniboxController::OnShowPromoResult,
+-                     weak_factory_.GetWeakPtr()));
++  auto* page_action_controller =
++      tab_->GetTabFeatures()->page_action_controller();
++  if (should_show) {
++    page_action_controller->Show(kActionSidePanelShowReadAnything);
++  } else {
++    page_action_controller->Hide(kActionSidePanelShowReadAnything);
++  }
+ }
+ 
+ void ReadAnythingOmniboxController::OnPageActionIconShown(
+@@ -227,26 +228,7 @@ void ReadAnythingOmniboxController::OnPageActionIconShown(
+   was_shown_ = true;
+ }
+ 
+-void ReadAnythingOmniboxController::UpdateIgnored(bool is_showing) {
+-  if (!is_showing) {
+-    return;
+-  }
+-
+-  // Indicate that the omnibox entrypoint was ignored if it's still showing when
+-  // the page changes or tab closes, and the user was on the previous page for a
+-  // non-trivial amount of time. Without this time check, the omnibox would be
+-  // snoozed if the user is quickly clicking through links without reading them,
+-  // so they aren't truly ignoring the Reading mode entrypoint.
+-  base::TimeDelta time_on_previous_page =
+-      candidate_check_triggered_time_ms_.is_null()
+-          ? base::Milliseconds(0)
+-          : base::TimeTicks::Now() - candidate_check_triggered_time_ms_;
+-  if (time_on_previous_page.InMilliseconds() >
+-      kTimeOnPreviousPageBeforeIgnored) {
+-    read_anything::ReadAnythingEntryPointController::OnPageActionIgnored(
+-        tab_->GetBrowserWindowInterface());
+-  }
+-}
++void ReadAnythingOmniboxController::UpdateIgnored(bool is_showing) {}
+ 
+ void ReadAnythingOmniboxController::OnShowPromoResult(
+     user_education::FeaturePromoResult result) {
+@@ -279,9 +261,7 @@ void ReadAnythingOmniboxController::StopTimers() {
+ }
+ 
+ bool ReadAnythingOmniboxController::IsIrrelevant() {
+-  return !tab_->IsActivated() ||
+-         read_anything::ReadAnythingEntryPointController::IsUIShowing(
+-             tab_->GetBrowserWindowInterface());
++  return !tab_->IsActivated();
+ }
+ 
+ void ReadAnythingOmniboxController::LogUkm() {
+diff --git a/components/dom_distiller/core/css/distilledpage_desktop.css b/components/dom_distiller/core/css/distilledpage_desktop.css
+index 2a66fda8c..4376486fb 100644
+--- a/components/dom_distiller/core/css/distilledpage_desktop.css
++++ b/components/dom_distiller/core/css/distilledpage_desktop.css
+@@ -23,6 +23,16 @@ fieldset {
+   margin-top: 32px;
+ }
+ 
++#article-meta {
++  font-size: 0.875em;
++  margin: 0.5em 16px 0;
++  opacity: 0.7;
++}
++
++#article-meta[hidden] {
++  display: none;
++}
++
+ .screen-reader-only {
+   border: none;
+   color: transparent;
+diff --git a/components/dom_distiller/core/distilled_page_prefs.h b/components/dom_distiller/core/distilled_page_prefs.h
+index 8be6c7adc..368b68004 100644
+--- a/components/dom_distiller/core/distilled_page_prefs.h
++++ b/components/dom_distiller/core/distilled_page_prefs.h
+@@ -120,7 +120,7 @@ class DistilledPagePrefs {
+   PrefChangeRegistrar pref_change_registrar_;
+   base::ObserverList<Observer> observers_;
+ 
+-  mojom::Theme default_theme_ = mojom::Theme::kLight;
++  mojom::Theme default_theme_ = mojom::Theme::kDark;
+   float default_font_scaling_ = 1.0f;
+ 
+   base::WeakPtrFactory<DistilledPagePrefs> weak_ptr_factory_{this};
+diff --git a/components/dom_distiller/core/dom_distiller_features.cc b/components/dom_distiller/core/dom_distiller_features.cc
+index fcec9a6a8..6855ffae1 100644
+--- a/components/dom_distiller/core/dom_distiller_features.cc
++++ b/components/dom_distiller/core/dom_distiller_features.cc
+@@ -21,8 +21,7 @@
+ namespace dom_distiller {
+ 
+ bool IsDomDistillerEnabled() {
+-  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+-      switches::kEnableDomDistiller);
++  return true;
+ }
+ 
+ bool ShouldStartDistillabilityService() {
+diff --git a/components/dom_distiller/core/html/dom_distiller_viewer.html b/components/dom_distiller/core/html/dom_distiller_viewer.html
+index 7b0526533..d5625e6ff 100644
+--- a/components/dom_distiller/core/html/dom_distiller_viewer.html
++++ b/components/dom_distiller/core/html/dom_distiller_viewer.html
+@@ -17,14 +17,6 @@ found in the LICENSE file.
+   <!-- Placeholder for CSP. -->
+   $1
+   <title>$i18n{title}</title>
+-  <link href="https://fonts.googleapis.com/icon?family=Material+Icons"
+-      rel="stylesheet">
+-  <!-- Import web fonts. -->
+-  <!-- On iOS, the web fonts block the rendering until the resources are fetched,
+-    which can take a long time on slow networks. In Blink, it times out after 3
+-    seconds and uses fallback fonts. See crbug.com/711650 -->
+-  <link href="https://fonts.googleapis.com/css2?family=Lexend&family=Roboto&display=block"
+-      rel="stylesheet" type="text/css">
+   <!-- Placeholder for CSS. -->
+   $2
+ </head>
+@@ -34,7 +26,7 @@ found in the LICENSE file.
+       <div id="settings-container" class="desktop-only">
+         <button id="settings-toggle" type="button"
+             aria-label="$i18n{customizeAppearance}" tabindex=0>
+-          <i class="material-icons">&#xE165</i>
++          <i class="material-icons">Aa</i>
+         </button>
+         <div id="dialog-backdrop"></div>
+         <dialog id="settings-dialog">
+@@ -51,7 +43,7 @@ found in the LICENSE file.
+                 <option value="serif">$i18n{serifFont}</option>
+                 <option value="monospace">$i18n{monospaceFont}</option>
+               </select>
+-              <i class="material-icons" id="arrow-drop-down">&#xe5c5</i>
++              <i class="material-icons" id="arrow-drop-down">&#x25BE;</i>
+             </div>
+             <div class="setting">
+               <fieldset id="theme-selection">
+@@ -62,17 +54,17 @@ found in the LICENSE file.
+                   <li class="theme-option">
+                     <input type="radio" name="theme" value="light"
+                        aria-label="$i18n{light}" id="theme-option-light" class="light" checked>
+-                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#xE86c</i></div>
++                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#x2713;</i></div>
+                   </li>
+                   <li class="theme-option">
+                     <input type="radio" name="theme" value="sepia"
+                        aria-label="$i18n{sepia}" id="theme-option-sepia" class="sepia">
+-                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#xE86c</i></div>
++                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#x2713;</i></div>
+                   </li>
+                   <li class="theme-option">
+                     <input type="radio" name="theme" value="dark"
+                        aria-label="$i18n{dark}" id="theme-option-dark" class="dark">
+-                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#xE86c</i></div>
++                    <div class="checkmark"><i class="material-icons" aria-hidden="true">&#x2713;</i></div>
+                   </li>
+                 </ul>
+               </fieldset>
+@@ -97,7 +89,7 @@ found in the LICENSE file.
+           </div>
+             <button id="close-settings-button" type="button"
+                 aria-label="$i18n{close}" tabindex=0>
+-              <i class="material-icons">close</i>
++              <i class="material-icons">&#x2715;</i>
+             </button>
+         </dialog>
+       </div>
+@@ -110,6 +102,11 @@ found in the LICENSE file.
+               </div>
+             </div>
+           </div>
++          <div id="article-meta" hidden>
++            <span id="reading-time"></span>
++            <span aria-hidden="true">&middot;</span>
++            <a id="view-original">View original</a>
++          </div>
+         </header>
+         <div id="content"><noscript>$4</noscript></div>
+       </article>
+diff --git a/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js b/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js
+index f3c6290b3..cca66a0f3 100644
+--- a/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js
++++ b/components/dom_distiller/core/javascript/dom_distiller_viewer_main.js
+@@ -69,6 +69,23 @@ function addToPage(html) {
+ 
+ function showLoadingIndicator(isLastPage) {
+   $('loading-indicator').className = isLastPage ? 'hidden' : 'visible';
++  if (isLastPage) {
++    showArticleMeta();
++  }
++}
++
++// Shows the estimated reading time and a link back to the original page.
++function showArticleMeta() {
++  const originalUrl = new URLSearchParams(location.search).get('url');
++  const words = $('content').innerText.split(/\s+/).filter(Boolean).length;
++  const minutes = Math.max(1, Math.round(words / 230));
++  $('reading-time').textContent = minutes + ' min. read';
++  if (originalUrl && /^https?:/.test(originalUrl)) {
++    $('view-original').href = originalUrl;
++  } else {
++    $('view-original').remove();
++  }
++  $('article-meta').hidden = false;
+ }
+ 
+ // Sets the title.
