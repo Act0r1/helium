@@ -67,18 +67,19 @@ index 22dcaf88c..056aa6bb7 100644
    }
  
 diff --git a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
-index 94a8ce37f..d13fc9028 100644
+index 94a8ce37f..806b682e4 100644
 --- a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
 +++ b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,8 @@
  #include "chrome/browser/ui/read_anything/read_anything_side_panel_controller_utils.h"
  #include "chrome/browser/ui/tabs/public/tab_features.h"
  #include "chrome/browser/ui/ui_features.h"
 +#include "components/dom_distiller/core/url_utils.h"
++#include "content/public/browser/navigation_handle.h"
  #include "content/public/browser/page.h"
  #include "content/public/browser/web_contents.h"
  #include "read_anything_entry_point_controller.h"
-@@ -25,14 +26,6 @@ ReadAnythingOmniboxController::ReadAnythingOmniboxController(
+@@ -25,14 +27,6 @@ ReadAnythingOmniboxController::ReadAnythingOmniboxController(
      : tabs::ContentsObservingTabFeature(*tab),
        PageActionObserver(kActionSidePanelShowReadAnything),
        tab_(tab) {
@@ -93,7 +94,7 @@ index 94a8ce37f..d13fc9028 100644
    RegisterAsPageActionObserver(
        *tab_->GetTabFeatures()->page_action_controller());
    tab_subscriptions_.push_back(tab_->RegisterWillDetach(
-@@ -91,10 +84,6 @@ void ReadAnythingOmniboxController::Activate(
+@@ -91,10 +85,6 @@ void ReadAnythingOmniboxController::Activate(
        base::UmaHistogramEnumeration(
            "Accessibility.ReadAnything.EntryPointAfterOmnibox", open_trigger);
      }
@@ -104,7 +105,7 @@ index 94a8ce37f..d13fc9028 100644
      if (open_trigger == ReadAnythingOpenTrigger::kOmniboxChip) {
        was_triggered_ = true;
      }
-@@ -134,8 +123,8 @@ void ReadAnythingOmniboxController::OnDiscardContents(
+@@ -134,8 +124,8 @@ void ReadAnythingOmniboxController::OnDiscardContents(
    tabs::ContentsObservingTabFeature::OnDiscardContents(tab, old_contents,
                                                         new_contents);
    LogUkm();
@@ -115,7 +116,7 @@ index 94a8ce37f..d13fc9028 100644
    StopTimers();
    was_last_checked_page_distillable_ = false;
    was_page_checked_ = false;
-@@ -152,7 +141,7 @@ void ReadAnythingOmniboxController::PrimaryPageChanged(content::Page& page) {
+@@ -152,14 +142,24 @@ void ReadAnythingOmniboxController::PrimaryPageChanged(content::Page& page) {
    }
  
    StopTimers();
@@ -124,7 +125,27 @@ index 94a8ce37f..d13fc9028 100644
    DebounceCheckSuggestion();
  }
  
-@@ -183,12 +172,21 @@ void ReadAnythingOmniboxController::CheckIfShouldSuggestReadingMode() {
+-void ReadAnythingOmniboxController::DidStopLoading() {
+-  if (check_suggestion_debouncer_ && check_suggestion_debouncer_->IsRunning()) {
+-    check_suggestion_debouncer_->Reset();
++void ReadAnythingOmniboxController::DidFinishNavigation(
++    content::NavigationHandle* navigation_handle) {
++  if (!navigation_handle->IsInPrimaryMainFrame() ||
++      !navigation_handle->IsSameDocument() ||
++      !navigation_handle->HasCommitted() ||
++      navigation_handle->GetPreviousPrimaryMainFrameURL().GetWithoutRef() ==
++          navigation_handle->GetURL().GetWithoutRef()) {
++    return;
+   }
++  PrimaryPageChanged(navigation_handle->GetWebContents()->GetPrimaryPage());
++}
++
++void ReadAnythingOmniboxController::DidStopLoading() {
++  DebounceCheckSuggestion();
+ }
+ 
+ void ReadAnythingOmniboxController::DebounceCheckSuggestion() {
+@@ -183,12 +183,21 @@ void ReadAnythingOmniboxController::CheckIfShouldSuggestReadingMode() {
      return;
    }
  
@@ -152,7 +173,7 @@ index 94a8ce37f..d13fc9028 100644
  }
  
  void ReadAnythingOmniboxController::OnShouldSuggestReadingModeResult(
-@@ -216,10 +214,13 @@ void ReadAnythingOmniboxController::UpdateVisibility(bool should_show) {
+@@ -216,10 +225,13 @@ void ReadAnythingOmniboxController::UpdateVisibility(bool should_show) {
      return;
    }
  
@@ -170,7 +191,7 @@ index 94a8ce37f..d13fc9028 100644
  }
  
  void ReadAnythingOmniboxController::OnPageActionIconShown(
-@@ -227,26 +228,7 @@ void ReadAnythingOmniboxController::OnPageActionIconShown(
+@@ -227,26 +239,7 @@ void ReadAnythingOmniboxController::OnPageActionIconShown(
    was_shown_ = true;
  }
  
@@ -198,7 +219,7 @@ index 94a8ce37f..d13fc9028 100644
  
  void ReadAnythingOmniboxController::OnShowPromoResult(
      user_education::FeaturePromoResult result) {
-@@ -279,9 +261,7 @@ void ReadAnythingOmniboxController::StopTimers() {
+@@ -279,9 +272,7 @@ void ReadAnythingOmniboxController::StopTimers() {
  }
  
  bool ReadAnythingOmniboxController::IsIrrelevant() {
@@ -209,6 +230,19 @@ index 94a8ce37f..d13fc9028 100644
  }
  
  void ReadAnythingOmniboxController::LogUkm() {
+diff --git a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.h b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.h
+index 96c362772..ddbcde2da 100644
+--- a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.h
++++ b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.h
+@@ -34,6 +34,8 @@ class ReadAnythingOmniboxController : public tabs::ContentsObservingTabFeature,
+   // content::WebContentsObserver:
+   void PrimaryPageChanged(content::Page& page) override;
+   void DidStopLoading() override;
++  void DidFinishNavigation(
++      content::NavigationHandle* navigation_handle) override;
+ 
+   // ReadAnythingLifecycleObserver:
+   void Activate(
 diff --git a/components/dom_distiller/core/css/distilledpage_desktop.css b/components/dom_distiller/core/css/distilledpage_desktop.css
 index 2a66fda8c..4376486fb 100644
 --- a/components/dom_distiller/core/css/distilledpage_desktop.css
