@@ -1,29 +1,8 @@
-diff --git a/chrome/browser/ui/views/frame/browser_frame_view.cc b/chrome/browser/ui/views/frame/browser_frame_view.cc
-index fcac4fe22..e74bea1e3 100644
---- a/chrome/browser/ui/views/frame/browser_frame_view.cc
-+++ b/chrome/browser/ui/views/frame/browser_frame_view.cc
-@@ -183,7 +183,7 @@ gfx::RoundedCornersF BrowserFrameView::GetWindowRoundedCorners() const {
- void BrowserFrameView::UpdateFullscreenTopUI() {}
- 
- bool BrowserFrameView::ShouldHideTopUIInFullscreen() const {
--  return true;
-+  return !GetBrowserView()->IsZenModeEnabledForLayout();
- }
- 
- bool BrowserFrameView::ShouldShowWebAppFrameToolbar() const {
 diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
-index 19bf2971d..12fdec04a 100644
+index 19bf2971d..3322819cf 100644
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -102,6 +102,7 @@
- #include "chrome/browser/ui/dialogs/browser_dialogs.h"
- #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
- #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
-+#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
- #include "chrome/browser/ui/find_bar/find_bar.h"
- #include "chrome/browser/ui/focus/browser_focus_controller.h"
- #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
-@@ -242,6 +243,7 @@
+@@ -242,6 +242,7 @@
  #include "chrome/browser/ui/views/update_recommended_message_box.h"
  #include "chrome/browser/ui/views/user_education/browser_user_education_service.h"
  #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
@@ -31,7 +10,7 @@ index 19bf2971d..12fdec04a 100644
  #include "chrome/browser/ui/waap/initial_web_ui_manager.h"
  #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
  #include "chrome/browser/ui/web_applications/app_browser_controller.h"
-@@ -1113,6 +1115,13 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
+@@ -1113,6 +1114,13 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
      horizontal_tab_strip_region_view_->InitializeTabStrip();
    }
  
@@ -45,7 +24,7 @@ index 19bf2971d..12fdec04a 100644
    if (auto* const organizer_panel_controller =
            OrganizerPanelController::From(browser_)) {
      organizer_tray_ =
-@@ -1236,6 +1245,7 @@ BrowserView::~BrowserView() {
+@@ -1236,6 +1244,7 @@ BrowserView::~BrowserView() {
    // Stop the animation timer explicitly here to avoid running it in a nested
    // message loop, which may run by Browser destructor.
    loading_animation_timer_.Stop();
@@ -53,7 +32,7 @@ index 19bf2971d..12fdec04a 100644
    zen_mode_event_monitor_.reset();
    app_menu_control_observation_.Reset();
  
-@@ -2045,6 +2055,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
+@@ -2045,6 +2054,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
      reveal_side = true;
    }
  
@@ -68,35 +47,7 @@ index 19bf2971d..12fdec04a 100644
    // Pinned top chrome stays visible regardless of cursor position.
    if (IsZenModeTopChromePinned()) {
      reveal_top = true;
-@@ -2110,11 +2128,27 @@ void BrowserView::RevealZenModeTopChromeImmediately() {
-   DeprecatedLayoutImmediately();
- }
- 
-+void BrowserView::RevealZenModeSideChromeImmediately() {
-+  if (!zen_mode_enabled_ || !zen_side_chrome_animation_.IsShowing()) {
-+    return;
-+  }
-+  zen_side_chrome_animation_.Reset(1);
-+  InvalidateLayout();
-+  DeprecatedLayoutImmediately();
-+}
-+
- bool BrowserView::IsZenModeEnabled() const {
-   auto* controller = HeliumLayoutStateController::From(browser_);
-   bool allow_fullscreen = false;
- #if BUILDFLAG(IS_MAC)
-   allow_fullscreen = !fullscreen_utils::IsInContentFullscreen(browser());
-+#else
-+  auto* const manager = ExclusiveAccessManager::From(browser_);
-+  FullscreenController* const fullscreen =
-+      manager ? manager->fullscreen_controller() : nullptr;
-+  allow_fullscreen = fullscreen &&
-+                     !fullscreen->IsWindowFullscreenForTabOrPending() &&
-+                     !fullscreen->IsExtensionFullscreenOrPending();
- #endif
-   return controller && controller->IsZenModeEnabled() && GetIsNormalType() &&
-          GetSupportsTabStrip() && GetWidget() &&
-@@ -2220,6 +2254,45 @@ void BrowserView::AppMenuClosed() {
+@@ -2220,6 +2237,45 @@ void BrowserView::AppMenuClosed() {
    }
  }
  
@@ -142,7 +93,7 @@ index 19bf2971d..12fdec04a 100644
  bool BrowserView::IsPointInZenTopChromeBounds(const gfx::Point& point) const {
    if (!top_container_ || !top_container_->parent()) {
      return false;
-@@ -4846,9 +4919,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
+@@ -4846,9 +4902,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
      }
    }
  
@@ -160,7 +111,7 @@ index 19bf2971d..12fdec04a 100644
    }
  
    ExtensionKeybindingRegistryViews::From(browser_)->OnHostActivationChanged(
-@@ -6868,6 +6947,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
+@@ -6868,6 +6930,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
  
  void BrowserView::AnimationEnded(const gfx::Animation* animation) {
    AnimationProgressed(animation);
@@ -171,7 +122,7 @@ index 19bf2971d..12fdec04a 100644
  
  WebAppFrameToolbarView* BrowserView::web_app_frame_toolbar() {
 diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
-index c91e80277..17ba885db 100644
+index c91e80277..d19f92410 100644
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
 @@ -124,6 +124,10 @@ namespace version_info {
@@ -198,17 +149,7 @@ index c91e80277..17ba885db 100644
  #if BUILDFLAG(IS_MAC)
    views::Widget* overlay_widget() { return overlay_widget_.get(); }
    const views::Widget* overlay_widget() const { return overlay_widget_.get(); }
-@@ -434,12 +444,19 @@ class BrowserView : public BrowserWindow,
-   float GetTopChromeRevealRatio() const;
-   float GetSideChromeRevealRatio() const;
-   bool IsZenModeSideChromePinned() const;
-+
-+  // Finishes the zen mode side chrome reveal so views in it are at their final
-+  // position, e.g. before anchoring a menu to them.
-+  void RevealZenModeSideChromeImmediately();
-   bool IsZenModeTopChromePinned() const;
- 
-   // Toggles the side chrome (VTS) visibility in zen mode.
+@@ -440,6 +450,9 @@ class BrowserView : public BrowserWindow,
    void ToggleZenModeSideChrome();
    void ToggleZenModeTopChrome();
  
@@ -218,7 +159,7 @@ index c91e80277..17ba885db 100644
    // Returns the widget for anchoring bubbles and dialogs.
    // This returns BrowserWidget except on fullscreen macOS where the toolbar is
    // hosted in an OverlayWidget.
-@@ -1231,6 +1248,8 @@ class BrowserView : public BrowserWindow,
+@@ -1231,6 +1244,8 @@ class BrowserView : public BrowserWindow,
    // details)
    std::optional<int> theme_background_y_offset_;
  
@@ -228,7 +169,7 @@ index c91e80277..17ba885db 100644
    raw_ptr<WebAppFrameToolbarView> web_app_frame_toolbar_ = nullptr;
  
 diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
-index 3ba0091e4..33ebe0430 100644
+index 3ba0091e4..605f2a92e 100644
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
 @@ -10,6 +10,7 @@
@@ -247,11 +188,9 @@ index 3ba0091e4..33ebe0430 100644
  #include "chrome/browser/ui/ui_features.h"
  #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
  #include "chrome/browser/ui/sessions/session_service_browser_helper.h"
-@@ -34,13 +36,21 @@
- #include "chrome/browser/ui/views/frame/system_menu_model_builder.h"
+@@ -35,12 +37,18 @@
  #include "chrome/browser/ui/views/frame/top_container_view.h"
  #include "chrome/browser/ui/views/helium/native_frame_materials.h"
-+#include "chrome/browser/ui/views/workspaces/workspace_background.h"
  #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 +#include "chrome/browser/ui/workspaces/workspace_controller.h"
  #include "chrome/common/chrome_switches.h"
@@ -265,33 +204,23 @@ index 3ba0091e4..33ebe0430 100644
  #include "ui/color/color_provider_key.h"
 +#include "ui/color/color_recipe.h"
 +#include "ui/color/color_transform.h"
-+#include "ui/gfx/color_utils.h"
  #include "ui/views/controls/menu/menu_runner.h"
  #include "ui/views/input_protection/widget_stationarity_monitor.h"
  #include "ui/views/widget/native_widget.h"
-@@ -66,6 +76,111 @@
+@@ -66,6 +74,70 @@
  #endif
  namespace {
  
-+// Lets the location bar take the tone of the workspace theme gradient or the
-+// page tint painted behind the browser chrome, and with a workspace theme, the
-+// new tab page show it through with tinted shortcut tiles.
++// Lets the location bar take the tone of the workspace theme gradient painted
++// behind the browser chrome, and the new tab page show it through with tinted
++// shortcut tiles.
 +class WorkspaceColorMixers : public ui::ColorProviderKey::InitializerSupplier {
 + public:
 +  static WorkspaceColorMixers* Get() {
-+    static base::NoDestructor<WorkspaceColorMixers> instance(
-+        /*new_tab_page=*/true);
++    static base::NoDestructor<WorkspaceColorMixers> instance;
 +    return instance.get();
 +  }
 +
-+  static WorkspaceColorMixers* GetForPageTint() {
-+    static base::NoDestructor<WorkspaceColorMixers> instance(
-+        /*new_tab_page=*/false);
-+    return instance.get();
-+  }
-+
-+  explicit WorkspaceColorMixers(bool new_tab_page)
-+      : new_tab_page_(new_tab_page) {}
 +  ~WorkspaceColorMixers() override = default;
 +
 +  // ui::ColorProviderKey::InitializerSupplier:
@@ -302,17 +231,10 @@ index 3ba0091e4..33ebe0430 100644
 +        ui::SetAlpha({ui::kColorSysOnSurface}, 0x14);
 +    mixer[kColorLocationBarBackgroundHovered] =
 +        ui::SetAlpha({ui::kColorSysOnSurface}, 0x1F);
-+    if (!new_tab_page_) {
-+      mixer[kColorToolbarContentAreaSeparator] = {SK_ColorTRANSPARENT};
-+      return;
-+    }
 +    mixer[kColorNewTabPageBackground] = {SK_ColorTRANSPARENT};
 +    mixer[kColorNewTabPageMostVisitedTileBackground] =
 +        ui::SetAlpha({ui::kColorSysPrimaryContainer}, 0x99);
 +  }
-+
-+ private:
-+  const bool new_tab_page_;
 +};
 +
 +// Lets the theme of the active workspace replace the profile theme. Returns
@@ -353,94 +275,30 @@ index 3ba0091e4..33ebe0430 100644
 +  return true;
 +}
 +
-+// Lets the tint of the active page replace the workspace and profile themes,
-+// with the color mode keeping text readable over it. Returns whether the tint
-+// is applied.
-+bool ApplyPageTint(const BrowserView* browser_view, ui::ColorProviderKey& key) {
-+  const workspaces::WorkspaceBackground* background =
-+      browser_view->workspace_background();
-+  const std::optional<SkColor> tint =
-+      background ? background->tint() : std::nullopt;
-+  if (!tint) {
-+    return false;
-+  }
-+  key.color_mode = color_utils::IsDark(*tint)
-+                       ? ui::ColorProviderKey::ColorMode::kDark
-+                       : ui::ColorProviderKey::ColorMode::kLight;
-+  // A coarse seed bounds the number of cached color providers.
-+  key.user_color = SkColorSetRGB((SkColorGetR(*tint) & 0xE0) | 0x10,
-+                                 (SkColorGetG(*tint) & 0xE0) | 0x10,
-+                                 (SkColorGetB(*tint) & 0xE0) | 0x10);
-+  key.user_color_source = ui::ColorProviderKey::UserColorSource::kAccent;
-+  key.scheme_variant = ui::ColorProviderKey::SchemeVariant::kNeutral;
-+  key.custom_theme = nullptr;
-+  key.system_theme = ui::SystemTheme::kDefault;
-+  return true;
-+}
-+
  // Helper to track whether a ThemeChange event has been received by the widget.
  class ThemeChangedObserver : public views::WidgetObserver {
   public:
-@@ -484,6 +599,15 @@ void BrowserWidget::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
- }
- 
- ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
-+  return GetThemedColorProviderKey(/*apply_page_tint=*/true);
-+}
-+
-+ui::ColorProviderKey::ColorMode BrowserWidget::GetColorMode() const {
-+  return GetThemedColorProviderKey(/*apply_page_tint=*/false).color_mode;
-+}
-+
-+ui::ColorProviderKey BrowserWidget::GetThemedColorProviderKey(
-+    bool apply_page_tint) const {
-   auto key = Widget::GetColorProviderKey();
- 
-   Profile* profile = browser_view_->browser()->GetProfile();
-@@ -492,6 +616,10 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -492,6 +564,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
  
    key = theme_service->GetColorProviderKey(key, profile);
    key.custom_theme = GetCustomTheme();
 +  const bool has_workspace_theme =
 +      ApplyWorkspaceTheme(browser_view_->browser(), key);
-+  const bool has_page_tint =
-+      apply_page_tint && ApplyPageTint(browser_view_, key);
  
    // Re-apply Widget overrides because GetColorProviderKey might have
    // overwritten them.
-@@ -506,6 +634,13 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+@@ -506,6 +580,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
    // Apply BrowserWidget overrides:
    key.app_controller =
        web_app::AppBrowserController::From(browser_view_->browser());
-+  if (!key.app_controller) {
-+    if (has_page_tint) {
-+      key.app_controller = WorkspaceColorMixers::GetForPageTint();
-+    } else if (has_workspace_theme) {
-+      key.app_controller = WorkspaceColorMixers::Get();
-+    }
++  if (has_workspace_theme && !key.app_controller) {
++    key.app_controller = WorkspaceColorMixers::Get();
 +  }
  
  #if BUILDFLAG(IS_CHROMEOS)
    // ChromeOS SystemWebApps use the OS theme all the time.
-diff --git a/chrome/browser/ui/views/frame/browser_widget.h b/chrome/browser/ui/views/frame/browser_widget.h
-index d384a2c99..56b5881c2 100644
---- a/chrome/browser/ui/views/frame/browser_widget.h
-+++ b/chrome/browser/ui/views/frame/browser_widget.h
-@@ -136,8 +136,12 @@ class BrowserWidget : public views::Widget,
-   // views::Widget:
-   void OnNativeThemeUpdated(ui::NativeTheme* observed_theme) override;
-   ui::ColorProviderKey GetColorProviderKey() const override;
-+  // Returns the color mode of the theme without the page tint, which web
-+  // contents follow, so a tint never changes the page it is sampled from.
-+  ui::ColorProviderKey::ColorMode GetColorMode() const override;
- 
-  private:
-+  ui::ColorProviderKey GetThemedColorProviderKey(bool apply_page_tint) const;
-   const ui::ThemeProvider* GetBaseThemeProvider() const;
- 
-   void OnTouchUiChanged();
 diff --git a/chrome/browser/ui/views/frame/contents_web_view.cc b/chrome/browser/ui/views/frame/contents_web_view.cc
-index 8f29bb429..33e6daec1 100644
+index 8f29bb429..675be93c4 100644
 --- a/chrome/browser/ui/views/frame/contents_web_view.cc
 +++ b/chrome/browser/ui/views/frame/contents_web_view.cc
 @@ -7,13 +7,17 @@
@@ -488,7 +346,7 @@ index 8f29bb429..33e6daec1 100644
 +  BrowserView* browser_view = BrowserView::GetBrowserViewForNativeWindow(
 +      GetWidget()->GetTopLevelWidget()->GetNativeWindow());
 +  return browser_view && browser_view->workspace_background() &&
-+         browser_view->workspace_background()->IsWorkspaceThemeShown();
++         browser_view->workspace_background()->IsThemeShown();
 +}
 +
 +void ContentsWebView::PrimaryPageChanged(content::Page& page) {
@@ -580,7 +438,7 @@ index 90bb0568b..03cb1c04a 100644
  
  void MultiContentsBackgroundView::UpdateSolidLayerColor() {
 diff --git a/chrome/browser/ui/views/frame/multi_contents_view.cc b/chrome/browser/ui/views/frame/multi_contents_view.cc
-index d48c360bf..670cb5499 100644
+index d48c360bf..e948508eb 100644
 --- a/chrome/browser/ui/views/frame/multi_contents_view.cc
 +++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
 @@ -34,6 +34,7 @@
@@ -607,7 +465,7 @@ index d48c360bf..670cb5499 100644
 +bool MultiContentsView::HasWorkspaceTheme() const {
 +  const workspaces::WorkspaceBackground* workspace_background =
 +      browser_view_->workspace_background();
-+  return workspace_background && workspace_background->IsWorkspaceThemeShown();
++  return workspace_background && workspace_background->IsThemeShown();
 +}
 +
  bool MultiContentsView::IsTopChromeAttachedForBorder() const {
@@ -636,30 +494,6 @@ index b15c4d6b8..e3ff4c0b1 100644
    void OnDragAndDropPrefStateChange();
    void OnRoundedFramePrefStateChange();
  
-diff --git a/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc b/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc
-index 5630b1956..d1146e1e0 100644
---- a/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc
-+++ b/chrome/browser/ui/views/frame/opaque_browser_frame_view.cc
-@@ -19,6 +19,7 @@
- #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
- #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_layout.h"
- #include "chrome/browser/ui/views/frame/top_container_view.h"
-+#include "chrome/browser/ui/views/workspaces/workspace_background.h"
- #include "chrome/browser/ui/views/tab_icon_view.h"
- #include "chrome/browser/ui/views/tabs/new_tab_button.h"
- #include "chrome/browser/ui/views/tabs/tab_strip.h"
-@@ -661,6 +662,11 @@ void OpaqueBrowserFrameView::OnPaint(gfx::Canvas* canvas) {
- 
-   const bool active = ShouldPaintAsActive();
-   SkColor frame_color = GetColorProvider()->GetColor(kColorToolbar);
-+  if (const workspaces::WorkspaceBackground* workspace_background =
-+          GetBrowserView()->workspace_background()) {
-+    frame_color =
-+        workspace_background->GetTintedColor(frame_color).value_or(frame_color);
-+  }
-   if (window_title_) {
-     window_title_->SetEnabledColor(
-         GetCaptionColor(BrowserFrameActiveState::kUseCurrent));
 diff --git a/chrome/browser/ui/views/frame/themed_background.cc b/chrome/browser/ui/views/frame/themed_background.cc
 index 25e457835..9c6eeebcd 100644
 --- a/chrome/browser/ui/views/frame/themed_background.cc
@@ -1729,10 +1563,10 @@ index fe76a1b5d..7210c8225 100644
  
 diff --git a/chrome/browser/ui/views/workspaces/workspace_background.cc b/chrome/browser/ui/views/workspaces/workspace_background.cc
 new file mode 100644
-index 000000000..6598d9ee7
+index 000000000..7dc4c4967
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_background.cc
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,208 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1740,139 +1574,32 @@ index 000000000..6598d9ee7
 +#include "chrome/browser/ui/views/workspaces/workspace_background.h"
 +
 +#include <cstdint>
-+#include <cstdlib>
-+#include <optional>
 +#include <vector>
 +
-+#include "base/functional/bind.h"
 +#include "base/no_destructor.h"
 +#include "base/time/time.h"
 +#include "cc/paint/paint_flags.h"
 +#include "cc/paint/paint_shader.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
 +#include "chrome/browser/ui/views/frame/multi_contents_view.h"
-+#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
-+#include "chrome/common/webui_url_constants.h"
-+#include "components/viz/common/frame_sinks/copy_output_result.h"
-+#include "content/public/browser/web_contents.h"
-+#include "content/public/common/url_constants.h"
 +#include "third_party/skia/include/core/SkBitmap.h"
 +#include "third_party/skia/include/core/SkPath.h"
 +#include "ui/gfx/animation/tween.h"
 +#include "ui/gfx/canvas.h"
-+#include "ui/gfx/color_utils.h"
 +#include "ui/gfx/geometry/rect.h"
 +#include "ui/gfx/geometry/rect_conversions.h"
 +#include "ui/gfx/geometry/skia_conversions.h"
 +#include "ui/gfx/image/image_skia.h"
 +#include "ui/views/view.h"
 +#include "ui/views/widget/widget.h"
-+#include "url/gurl.h"
 +
 +namespace workspaces {
 +
 +namespace {
 +
 +constexpr base::TimeDelta kCrossFadeDuration = base::Milliseconds(320);
-+constexpr base::TimeDelta kTintFadeDuration = base::Milliseconds(180);
 +constexpr int kGrainSize = 128;
 +constexpr uint8_t kGrainAlpha = 0x1C;
-+
-+constexpr base::TimeDelta kTintSampleInterval = base::Milliseconds(150);
-+constexpr base::TimeDelta kTintSampleTimeout = base::Seconds(1);
-+// The page is captured downscaled, each pixel averaging about 12px.
-+constexpr gfx::Size kTintSampleSize(160, 100);
-+// Skips the outermost pixels, which may hold the scrollbar, and reads a band
-+// of `kTintEdgeDepth` pixels inside them.
-+constexpr int kTintEdgeInset = 2;
-+constexpr int kTintEdgeDepth = 2;
-+// Share of the edge band the dominant color must cover to be extended, and
-+// the lower share that keeps extending the current tint.
-+constexpr float kTintMinShare = 0.6f;
-+constexpr float kTintKeepShare = 0.45f;
-+// Smaller per-channel changes of the dominant color keep the current tint.
-+constexpr int kTintMinChange = 6;
-+// Opacity of the contrast layer that sets the tab strip apart from the tint.
-+constexpr float kTintTabStripContrastDark = 0.09f;
-+constexpr float kTintTabStripContrastLight = 0.055f;
-+
-+bool AreChannelsClose(U8CPU a, U8CPU b) {
-+  return std::abs(static_cast<int>(a) - static_cast<int>(b)) < kTintMinChange;
-+}
-+
-+bool AreColorsClose(SkColor a, SkColor b) {
-+  return AreChannelsClose(SkColorGetR(a), SkColorGetR(b)) &&
-+         AreChannelsClose(SkColorGetG(a), SkColorGetG(b)) &&
-+         AreChannelsClose(SkColorGetB(a), SkColorGetB(b));
-+}
-+
-+// Returns the dominant color of the edge band of `bitmap`, if it covers at
-+// least `kTintMinShare` of the band, or `kTintKeepShare` when it is close to
-+// the `current` tint. Translucent pixels never match.
-+std::optional<SkColor> DominantEdgeColor(const SkBitmap& bitmap,
-+                                         std::optional<SkColor> current) {
-+  const int width = bitmap.width();
-+  const int height = bitmap.height();
-+  constexpr int kBand = kTintEdgeInset + kTintEdgeDepth;
-+  if (width <= 2 * kBand || height <= 2 * kBand) {
-+    return std::nullopt;
-+  }
-+
-+  // Colors are binned by their 4 high bits per channel.
-+  struct Bin {
-+    int count = 0;
-+    int r = 0;
-+    int g = 0;
-+    int b = 0;
-+  };
-+  std::vector<Bin> bins(1 << 12);
-+  int total = 0;
-+  for (int y = kTintEdgeInset; y < height - kTintEdgeInset; ++y) {
-+    for (int x = kTintEdgeInset; x < width - kTintEdgeInset; ++x) {
-+      if (x >= kBand && x < width - kBand && y >= kBand && y < height - kBand) {
-+        continue;
-+      }
-+      ++total;
-+      const SkColor color = bitmap.getColor(x, y);
-+      if (SkColorGetA(color) != SK_AlphaOPAQUE) {
-+        continue;
-+      }
-+      const int r = SkColorGetR(color);
-+      const int g = SkColorGetG(color);
-+      const int b = SkColorGetB(color);
-+      Bin& bin = bins[(r >> 4) << 8 | (g >> 4) << 4 | (b >> 4)];
-+      ++bin.count;
-+      bin.r += r;
-+      bin.g += g;
-+      bin.b += b;
-+    }
-+  }
-+
-+  const Bin* best = &bins.front();
-+  for (const Bin& bin : bins) {
-+    if (bin.count > best->count) {
-+      best = &bin;
-+    }
-+  }
-+  if (best->count == 0) {
-+    return std::nullopt;
-+  }
-+  const SkColor color = SkColorSetRGB(
-+      best->r / best->count, best->g / best->count, best->b / best->count);
-+  const float min_share = current && AreColorsClose(color, *current)
-+                              ? kTintKeepShare
-+                              : kTintMinShare;
-+  if (best->count < min_share * total) {
-+    return std::nullopt;
-+  }
-+  return color;
-+}
-+
-+bool IsNewTabPage(const GURL& url) {
-+  return url.SchemeIs(content::kChromeUIScheme) &&
-+         (url.host() == chrome::kChromeUINewTabPageHost ||
-+          url.host() == chrome::kChromeUINewTabHost);
-+}
 +
 +// Returns a tile of deterministic monochrome noise.
 +const gfx::ImageSkia& GrainTile() {
@@ -1893,27 +1620,13 @@ index 000000000..6598d9ee7
 +  return *tile;
 +}
 +
-+// Paints `tint`, or else `theme` over `base`, into `bounds` of `canvas`, with
-+// the vertical gradient spanning `area`, the BrowserView bounds in canvas
-+// coordinates. A `tab_strip` tint is shifted toward contrast.
++// Paints `theme` over `base` into `bounds` of `canvas`, with the vertical
++// gradient spanning `area`, the BrowserView bounds in canvas coordinates.
 +void PaintLook(gfx::Canvas* canvas,
 +               const gfx::Rect& bounds,
 +               const gfx::Rect& area,
 +               SkColor base,
-+               const WorkspaceTheme& theme,
-+               std::optional<SkColor> tint,
-+               bool tab_strip) {
-+  if (tint) {
-+    canvas->DrawColor(*tint);
-+    if (tab_strip) {
-+      const bool dark = color_utils::IsDark(*tint);
-+      canvas->DrawColor(SkColorSetA(
-+          dark ? SK_ColorWHITE : SK_ColorBLACK,
-+          static_cast<uint8_t>(255 * (dark ? kTintTabStripContrastDark
-+                                           : kTintTabStripContrastLight))));
-+    }
-+    return;
-+  }
++               const WorkspaceTheme& theme) {
 +  canvas->DrawColor(base);
 +  if (theme.colors.empty()) {
 +    return;
@@ -1967,6 +1680,7 @@ index 000000000..6598d9ee7
 +WorkspaceBackground::WorkspaceBackground(BrowserView* browser_view,
 +                                         WorkspaceController* controller)
 +    : browser_view_(browser_view), controller_(controller) {
++  animation_.SetSlideDuration(kCrossFadeDuration);
 +  animation_.SetTweenType(gfx::Tween::EASE_IN_OUT);
 +  if (const Workspace* active = controller_->GetActiveWorkspace()) {
 +    shown_id_ = active->id;
@@ -1975,30 +1689,9 @@ index 000000000..6598d9ee7
 +    shown_theme_ = *theme;
 +  }
 +  observation_.Observe(controller_);
-+  sample_timer_.Start(FROM_HERE, kTintSampleInterval, this,
-+                      &WorkspaceBackground::SampleTint);
 +}
 +
 +WorkspaceBackground::~WorkspaceBackground() = default;
-+
-+bool WorkspaceBackground::IsThemeShown() const {
-+  return IsWorkspaceThemeShown() || tint_ ||
-+         (previous_ && (previous_->tint || !previous_->theme.colors.empty()));
-+}
-+
-+std::optional<SkColor> WorkspaceBackground::GetTintedColor(SkColor base) const {
-+  const bool fading = previous_ && animation_.is_animating();
-+  if (!tint_ && !(fading && previous_->tint)) {
-+    return std::nullopt;
-+  }
-+  const SkColor color = tint_.value_or(base);
-+  if (!fading) {
-+    return color;
-+  }
-+  return color_utils::AlphaBlend(color,
-+                                 previous_->tint.value_or(previous_->base),
-+                                 static_cast<float>(animation_.GetCurrentValue()));
-+}
 +
 +bool WorkspaceBackground::Paint(gfx::Canvas* canvas,
 +                                const views::View* view,
@@ -2007,7 +1700,7 @@ index 000000000..6598d9ee7
 +  if (!fading) {
 +    last_base_ = base;
 +  }
-+  if (!IsThemeShown() && !fading) {
++  if (shown_theme_.colors.empty() && !fading) {
 +    return false;
 +  }
 +
@@ -2020,16 +1713,14 @@ index 000000000..6598d9ee7
 +          ? view->GetLocalBounds()
 +          : gfx::ToEnclosingRect(gfx::SkRectToRectF(clip_path.getBounds()));
 +
-+  const bool tab_strip = views::IsViewClass<VerticalTabStripRegionView>(view);
 +  if (!fading) {
-+    PaintLook(canvas, bounds, area, base, shown_theme_, tint_, tab_strip);
++    PaintLook(canvas, bounds, area, base, shown_theme_);
 +    return true;
 +  }
-+  PaintLook(canvas, bounds, area, previous_->base, previous_->theme,
-+            previous_->tint, tab_strip);
++  PaintLook(canvas, bounds, area, previous_->base, previous_->theme);
 +  canvas->SaveLayerAlpha(
 +      static_cast<uint8_t>(animation_.GetCurrentValue() * 255), bounds);
-+  PaintLook(canvas, bounds, area, base, shown_theme_, tint_, tab_strip);
++  PaintLook(canvas, bounds, area, base, shown_theme_);
 +  canvas->Restore();
 +  return true;
 +}
@@ -2047,16 +1738,7 @@ index 000000000..6598d9ee7
 +}
 +
 +void WorkspaceBackground::AnimationEnded(const gfx::Animation* animation) {
-+  const bool was_shown = IsThemeShown();
 +  previous_.reset();
-+  if (was_shown != IsThemeShown()) {
-+    if (views::Widget* widget = browser_view_->GetWidget()) {
-+      widget->ThemeChanged();
-+    }
-+    if (browser_view_->multi_contents_view()) {
-+      browser_view_->multi_contents_view()->InvalidateLayout();
-+    }
-+  }
 +  SchedulePaintChrome();
 +}
 +
@@ -2069,8 +1751,11 @@ index 000000000..6598d9ee7
 +    return;
 +  }
 +
-+  if (id != shown_id_) {
-+    StartCrossFade(kCrossFadeDuration);
++  if (id != shown_id_ && browser_view_->GetWidget() &&
++      browser_view_->GetWidget()->IsVisible()) {
++    previous_ = Look{last_base_, shown_theme_};
++    animation_.Reset();
++    animation_.Show();
 +  }
 +  const bool was_shown = IsThemeShown();
 +  shown_id_ = id;
@@ -2084,70 +1769,7 @@ index 000000000..6598d9ee7
 +  SchedulePaintChrome();
 +}
 +
-+void WorkspaceBackground::SampleTint() {
-+  views::Widget* widget = browser_view_->GetWidget();
-+  if (sampling_ || !widget || !widget->IsVisible() || widget->IsMinimized() ||
-+      (widget->IsFullscreen() && !browser_view_->IsZenModeEnabledForLayout())) {
-+    return;
-+  }
-+  content::WebContents* contents = browser_view_->GetActiveWebContents();
-+  content::RenderWidgetHostView* view =
-+      contents ? contents->GetRenderWidgetHostView() : nullptr;
-+  if (!view || IsNewTabPage(contents->GetLastCommittedURL())) {
-+    SetTint(std::nullopt);
-+    return;
-+  }
-+  sampling_ = true;
-+  sampled_contents_ = contents->GetWeakPtr();
-+  sampled_url_ = contents->GetLastCommittedURL();
-+  view->CopyFromSurface(gfx::Rect(), kTintSampleSize, kTintSampleTimeout,
-+                        base::BindOnce(&WorkspaceBackground::OnTintSampled,
-+                                       weak_factory_.GetWeakPtr()));
-+}
-+
-+void WorkspaceBackground::OnTintSampled(
-+    const content::CopyFromSurfaceResult& result) {
-+  sampling_ = false;
-+  content::WebContents* contents = browser_view_->GetActiveWebContents();
-+  if (!result.has_value() || !contents ||
-+      contents != sampled_contents_.get() ||
-+      contents->GetLastCommittedURL() != sampled_url_) {
-+    return;
-+  }
-+  SetTint(DominantEdgeColor(result->bitmap, tint_));
-+}
-+
-+void WorkspaceBackground::SetTint(std::optional<SkColor> tint) {
-+  if (tint.has_value() == tint_.has_value() &&
-+      (!tint || AreColorsClose(*tint, *tint_))) {
-+    return;
-+  }
-+  StartCrossFade(kTintFadeDuration);
-+  const bool was_shown = IsThemeShown();
-+  tint_ = tint;
-+  if (views::Widget* widget = browser_view_->GetWidget()) {
-+    widget->ThemeChanged();
-+  }
-+  if (was_shown != IsThemeShown() && browser_view_->multi_contents_view()) {
-+    browser_view_->multi_contents_view()->InvalidateLayout();
-+  }
-+  SchedulePaintChrome();
-+}
-+
-+void WorkspaceBackground::StartCrossFade(base::TimeDelta duration) {
-+  if (!browser_view_->GetWidget() || !browser_view_->GetWidget()->IsVisible()) {
-+    return;
-+  }
-+  previous_ = Look{last_base_, shown_theme_, tint_};
-+  animation_.SetSlideDuration(duration);
-+  animation_.Reset();
-+  animation_.Show();
-+}
-+
 +void WorkspaceBackground::SchedulePaintChrome() {
-+  if (views::Widget* widget = browser_view_->GetWidget()) {
-+    widget->GetRootView()->SchedulePaint();
-+  }
 +  browser_view_->SchedulePaint();
 +  SchedulePaintLayers(browser_view_);
 +}
@@ -2155,10 +1777,10 @@ index 000000000..6598d9ee7
 +}  // namespace workspaces
 diff --git a/chrome/browser/ui/views/workspaces/workspace_background.h b/chrome/browser/ui/views/workspaces/workspace_background.h
 new file mode 100644
-index 000000000..695678d8f
+index 000000000..5f809dda8
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_background.h
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,84 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -2170,21 +1792,13 @@ index 000000000..695678d8f
 +#include <string>
 +
 +#include "base/memory/raw_ptr.h"
-+#include "base/memory/weak_ptr.h"
 +#include "base/scoped_observation.h"
-+#include "base/timer/timer.h"
 +#include "chrome/browser/ui/workspaces/workspace_controller.h"
-+#include "content/public/browser/render_widget_host_view.h"
 +#include "third_party/skia/include/core/SkColor.h"
 +#include "ui/gfx/animation/animation_delegate.h"
 +#include "ui/gfx/animation/slide_animation.h"
-+#include "url/gurl.h"
 +
 +class BrowserView;
-+
-+namespace content {
-+class WebContents;
-+}
 +
 +namespace gfx {
 +class Canvas;
@@ -2199,9 +1813,7 @@ index 000000000..695678d8f
 +// Paints the gradient and grain of the active workspace theme behind the
 +// browser chrome, aligned to the BrowserView so that all chrome views share
 +// one gradient. Cross-fades the background when another workspace becomes
-+// active, and applies theme changes to the browser color palette. When the
-+// edges of the active page share one color, paints that tint instead, so the
-+// chrome continues the page.
++// active, and applies theme changes to the browser color palette.
 +class WorkspaceBackground : public WorkspaceController::Observer,
 +                            public gfx::AnimationDelegate {
 + public:
@@ -2215,20 +1827,9 @@ index 000000000..695678d8f
 +  // Returns false when no workspace theme is shown and nothing was painted.
 +  bool Paint(gfx::Canvas* canvas, const views::View* view, SkColor base) const;
 +
-+  // Returns whether a workspace theme or a page tint is shown or still fading
-+  // out, so the chrome around the web contents lets the background through.
-+  bool IsThemeShown() const;
-+
-+  // Returns whether a workspace theme is shown, which the new tab page shows
-+  // through.
-+  bool IsWorkspaceThemeShown() const { return !shown_theme_.colors.empty(); }
-+
-+  // Returns the color of the edges of the active page, if they share one.
-+  std::optional<SkColor> tint() const { return tint_; }
-+
-+  // Returns the solid color painted over `base` while a page tint is shown or
-+  // fading, for surfaces that paint one color, like the window frame.
-+  std::optional<SkColor> GetTintedColor(SkColor base) const;
++  // Returns whether a workspace theme is shown, so the chrome around the web
++  // contents lets the gradient through.
++  bool IsThemeShown() const { return !shown_theme_.colors.empty(); }
 +
 +  // WorkspaceController::Observer:
 +  void OnWorkspacesChanged() override;
@@ -2242,16 +1843,9 @@ index 000000000..695678d8f
 +  struct Look {
 +    SkColor base = SK_ColorTRANSPARENT;
 +    WorkspaceTheme theme;
-+    std::optional<SkColor> tint;
 +  };
 +
 +  void Sync();
-+  // Captures the active page to update `tint_`.
-+  void SampleTint();
-+  void OnTintSampled(const content::CopyFromSurfaceResult& result);
-+  void SetTint(std::optional<SkColor> tint);
-+  // Cross-fades from the current look when the window is visible.
-+  void StartCrossFade(base::TimeDelta duration);
 +  void SchedulePaintChrome();
 +
 +  const raw_ptr<BrowserView> browser_view_;
@@ -2263,17 +1857,9 @@ index 000000000..695678d8f
 +  std::optional<Look> previous_;
 +  // The base color of the last paint, which `previous_` keeps on a switch.
 +  mutable SkColor last_base_ = SK_ColorTRANSPARENT;
-+  std::optional<SkColor> tint_;
-+  bool sampling_ = false;
-+  // The page captured by the pending sample, to drop results of a page that is
-+  // no longer active.
-+  base::WeakPtr<content::WebContents> sampled_contents_;
-+  GURL sampled_url_;
-+  base::RepeatingTimer sample_timer_;
 +  gfx::SlideAnimation animation_{this};
 +  base::ScopedObservation<WorkspaceController, WorkspaceController::Observer>
 +      observation_{this};
-+  base::WeakPtrFactory<WorkspaceBackground> weak_factory_{this};
 +};
 +
 +}  // namespace workspaces
@@ -2281,10 +1867,10 @@ index 000000000..695678d8f
 +#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_BACKGROUND_H_
 diff --git a/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
 new file mode 100644
-index 000000000..38bc909d5
+index 000000000..4aa3828bb
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
-@@ -0,0 +1,813 @@
+@@ -0,0 +1,796 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -2542,15 +2128,6 @@ index 000000000..38bc909d5
 +      ExpandOnHoverLockType::kKeepCurrentState);
 +}
 +
-+// Finishes the zen mode reveal of the vertical tab strip that contains
-+// `anchor`, so a menu anchored to it does not stay at a mid-slide position.
-+void RevealSideChrome(views::View* anchor) {
-+  if (BrowserView* browser_view = BrowserView::GetBrowserViewForNativeWindow(
-+          anchor->GetWidget()->GetNativeWindow())) {
-+    browser_view->RevealZenModeSideChromeImmediately();
-+  }
-+}
-+
 +// Shows the icon picker below `anchor`. Keeps a bubble that contains `anchor`
 +// open while the picker has focus.
 +void ShowIconPicker(views::View* anchor,
@@ -2636,12 +2213,9 @@ index 000000000..38bc909d5
 +    model_->AddItemWithStringId(kNewCommand, IDS_WORKSPACE_NEW_TOOLTIP);
 +    model_->AddSeparator(ui::NORMAL_SEPARATOR);
 +    model_->AddItemWithStringId(kCloseCommand, IDS_WORKSPACE_CLOSE);
-+    tab_strip_lock_ = KeepTabStripState(anchor);
 +    runner_ = std::make_unique<views::MenuRunner>(
 +        model_.get(),
-+        views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU,
-+        base::BindRepeating(&WorkspaceMenu::OnMenuClosed,
-+                            base::Unretained(this)));
++        views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU);
 +    runner_->RunMenuAt(anchor->GetWidget(), nullptr, bounds, position,
 +                       source_type);
 +  }
@@ -2667,8 +2241,6 @@ index 000000000..38bc909d5
 +  }
 +
 + private:
-+  void OnMenuClosed() { tab_strip_lock_.reset(); }
-+
 +  void ShowEditor() {
 +    const auto& workspaces = controller_->GetWorkspaces();
 +    const auto it = std::ranges::find(workspaces, workspace_id_,
@@ -2777,7 +2349,6 @@ index 000000000..38bc909d5
 +  std::string workspace_id_;
 +  views::ViewTracker anchor_;
 +  std::unique_ptr<ui::SimpleMenuModel> model_;
-+  std::unique_ptr<ExpandOnHoverLock> tab_strip_lock_;
 +  std::unique_ptr<views::MenuRunner> runner_;
 +  bool editor_accepted_ = false;
 +  base::WeakPtrFactory<WorkspaceMenu> weak_factory_{this};
@@ -2998,13 +2569,11 @@ index 000000000..38bc909d5
 +      views::View* source,
 +      const gfx::Point& point,
 +      ui::mojom::MenuSourceType source_type) override {
-+    RevealSideChrome(this);
 +    ShowMenu(gfx::Rect(point, gfx::Size()), views::MenuAnchorPosition::kTopLeft,
 +             source_type);
 +  }
 +
 +  void OnPressed(const ui::Event& event) {
-+    RevealSideChrome(this);
 +    ShowMenu(GetBoundsInScreen(), views::MenuAnchorPosition::kTopLeft,
 +             ui::mojom::MenuSourceType::kMouse);
 +  }
@@ -5232,19 +4801,6 @@ index af7123d31..901867874 100644
    // NtpCustomBackgroundServiceObserver:
    void OnCustomBackgroundImageUpdated() override;
  
-diff --git a/ui/color/color_provider_source.h b/ui/color/color_provider_source.h
-index a5e2414d0..3ee8a5118 100644
---- a/ui/color/color_provider_source.h
-+++ b/ui/color/color_provider_source.h
-@@ -40,7 +40,7 @@ class COMPONENT_EXPORT(COLOR) ColorProviderSource {
-   void NotifyColorProviderChanged();
- 
-   // Gets the ColorMode currently associated with this source.
--  ColorProviderKey::ColorMode GetColorMode() const;
-+  virtual ColorProviderKey::ColorMode GetColorMode() const;
- 
-   // Gets the ForcedColors state currently associated with this source.
-   ColorProviderKey::ForcedColors GetForcedColors() const;
 diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
 index 8c01e0ab6..aa66d531e 100644
 --- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
