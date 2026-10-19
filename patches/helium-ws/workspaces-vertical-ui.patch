@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
-index 19bf2971d..3322819cf 100644
+index 0ff2fb622..5450acab5 100644
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
 @@ -242,6 +242,7 @@
@@ -30,24 +30,26 @@ index 19bf2971d..3322819cf 100644
    loading_animation_timer_.Stop();
 +  workspace_background_.reset();
    zen_mode_event_monitor_.reset();
+   zen_expand_on_hover_lock_.reset();
    app_menu_control_observation_.Reset();
- 
-@@ -2045,6 +2054,14 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
+@@ -2049,6 +2058,16 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
      reveal_side = true;
    }
  
 +  // Keep the VTS visible while a bubble or menu opened from it holds a
-+  // keep-state lock on it.
++  // keep-state lock on it. The floating sidebar's own lock doesn't count.
++  const int zen_lock_count = zen_expand_on_hover_lock_ ? 1 : 0;
 +  if (!reveal_side && ShouldDrawVerticalTabStrip() &&
 +      vertical_tab_strip_region_view_ &&
-+      vertical_tab_strip_region_view_->HasKeepStateLock()) {
++      vertical_tab_strip_region_view_->keep_state_lock_count() >
++          zen_lock_count) {
 +    reveal_side = true;
 +  }
 +
    // Pinned top chrome stays visible regardless of cursor position.
    if (IsZenModeTopChromePinned()) {
      reveal_top = true;
-@@ -2220,6 +2237,45 @@ void BrowserView::AppMenuClosed() {
+@@ -2223,6 +2242,45 @@ void BrowserView::AppMenuClosed() {
    }
  }
  
@@ -93,7 +95,7 @@ index 19bf2971d..3322819cf 100644
  bool BrowserView::IsPointInZenTopChromeBounds(const gfx::Point& point) const {
    if (!top_container_ || !top_container_->parent()) {
      return false;
-@@ -4846,9 +4902,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
+@@ -4849,9 +4907,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
      }
    }
  
@@ -111,7 +113,7 @@ index 19bf2971d..3322819cf 100644
    }
  
    ExtensionKeybindingRegistryViews::From(browser_)->OnHostActivationChanged(
-@@ -6868,6 +6930,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
+@@ -6871,6 +6935,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
  
  void BrowserView::AnimationEnded(const gfx::Animation* animation) {
    AnimationProgressed(animation);
@@ -122,10 +124,10 @@ index 19bf2971d..3322819cf 100644
  
  WebAppFrameToolbarView* BrowserView::web_app_frame_toolbar() {
 diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
-index c91e80277..d19f92410 100644
+index 9bffe730e..690360170 100644
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
-@@ -124,6 +124,10 @@ namespace version_info {
+@@ -125,6 +125,10 @@ namespace version_info {
  enum class Channel;
  }
  
@@ -136,7 +138,7 @@ index c91e80277..d19f92410 100644
  namespace views {
  class EventMonitor;
  class LabelButton;
-@@ -252,6 +256,12 @@ class BrowserView : public BrowserWindow,
+@@ -253,6 +257,12 @@ class BrowserView : public BrowserWindow,
      theme_background_y_offset_ = offset;
    }
  
@@ -149,7 +151,7 @@ index c91e80277..d19f92410 100644
  #if BUILDFLAG(IS_MAC)
    views::Widget* overlay_widget() { return overlay_widget_.get(); }
    const views::Widget* overlay_widget() const { return overlay_widget_.get(); }
-@@ -440,6 +450,9 @@ class BrowserView : public BrowserWindow,
+@@ -441,6 +451,9 @@ class BrowserView : public BrowserWindow,
    void ToggleZenModeSideChrome();
    void ToggleZenModeTopChrome();
  
@@ -159,7 +161,7 @@ index c91e80277..d19f92410 100644
    // Returns the widget for anchoring bubbles and dialogs.
    // This returns BrowserWidget except on fullscreen macOS where the toolbar is
    // hosted in an OverlayWidget.
-@@ -1231,6 +1244,8 @@ class BrowserView : public BrowserWindow,
+@@ -1232,6 +1245,8 @@ class BrowserView : public BrowserWindow,
    // details)
    std::optional<int> theme_background_y_offset_;
  
@@ -438,7 +440,7 @@ index 90bb0568b..03cb1c04a 100644
  
  void MultiContentsBackgroundView::UpdateSolidLayerColor() {
 diff --git a/chrome/browser/ui/views/frame/multi_contents_view.cc b/chrome/browser/ui/views/frame/multi_contents_view.cc
-index d48c360bf..e948508eb 100644
+index 28dc2b0e6..f0cad96e9 100644
 --- a/chrome/browser/ui/views/frame/multi_contents_view.cc
 +++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
 @@ -34,6 +34,7 @@
@@ -449,7 +451,7 @@ index d48c360bf..e948508eb 100644
  #include "chrome/common/pref_names.h"
  #include "chrome/common/webui_url_constants.h"
  #include "components/prefs/pref_service.h"
-@@ -579,6 +580,8 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
+@@ -580,6 +581,8 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
  
    if (IsInSplitView()) {
      available_space.Inset(split_view_insets_);
@@ -458,7 +460,7 @@ index d48c360bf..e948508eb 100644
    } else if (should_use_rounded_frame) {
      gfx::Insets single_insets(kSplitViewContentInset);
      single_insets.set_top(attached_chrome.TopInset());
-@@ -891,6 +894,12 @@ bool MultiContentsView::ShouldUseRoundedFrame() const {
+@@ -892,6 +895,12 @@ bool MultiContentsView::ShouldUseRoundedFrame() const {
           !is_fullscreen;
  }
  
@@ -495,7 +497,7 @@ index b15c4d6b8..e3ff4c0b1 100644
    void OnRoundedFramePrefStateChange();
  
 diff --git a/chrome/browser/ui/views/frame/themed_background.cc b/chrome/browser/ui/views/frame/themed_background.cc
-index 25e457835..9c6eeebcd 100644
+index 7651017ff..3aaebf096 100644
 --- a/chrome/browser/ui/views/frame/themed_background.cc
 +++ b/chrome/browser/ui/views/frame/themed_background.cc
 @@ -12,6 +12,7 @@
@@ -506,7 +508,7 @@ index 25e457835..9c6eeebcd 100644
  #include "chrome/grit/theme_resources.h"
  #include "ui/base/theme_provider.h"
  #include "ui/color/color_id.h"
-@@ -114,8 +115,14 @@ void ThemedBackground::PaintBackground(gfx::Canvas* canvas,
+@@ -115,8 +116,14 @@ void ThemedBackground::PaintBackground(gfx::Canvas* canvas,
    bool painted =
        PaintThemeCustomImage(canvas, view, browser_view, theme_choice);
    if (!painted) {
@@ -524,17 +526,17 @@ index 25e457835..9c6eeebcd 100644
  }
  
 diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
-index b7478d5cb..843335c5d 100644
+index 5eca03bcd..49f719834 100644
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
 +++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
-@@ -106,6 +106,12 @@ class VerticalTabStripRegionView final
+@@ -117,6 +117,12 @@ class VerticalTabStripRegionView final
    std::unique_ptr<ExpandOnHoverLock> GetExpandOnHoverLock(
        ExpandOnHoverLockType lock_type) override;
  
-+  // True while a kKeepCurrentState or kKeepExpanded lock is held, e.g. by a
-+  // bubble or menu opened from the tab strip.
-+  bool HasKeepStateLock() const {
-+    return keep_current_state_lock_count_ > 0 || keep_expanded_lock_count_ > 0;
++  // Number of kKeepCurrentState and kKeepExpanded locks held, e.g. by a bubble
++  // or menu opened from the tab strip.
++  int keep_state_lock_count() const {
++    return keep_current_state_lock_count_ + keep_expanded_lock_count_;
 +  }
 +
    // BrowserRootView::DropTarget:
@@ -553,7 +555,7 @@ index 25dd2d748..33129843b 100644
  
  double SidePanel::GetAnimationValueFor(BrowserAnimationSequence which) const {
 diff --git a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
-index e2d93808d..0ad9b13fd 100644
+index 4c5368623..2d8bc7cb1 100644
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 @@ -4,10 +4,16 @@
@@ -937,7 +939,7 @@ index e2d93808d..0ad9b13fd 100644
  void PinnedTabContainerView::OnCollapseStateChanged(
      tabs::VerticalTabStripCollapseState state) {
    // Collapsed state only exists for the vertical orientation.
-@@ -372,39 +674,52 @@ views::ProposedLayout PinnedTabContainerView::CalculateHorizontalLayout(
+@@ -372,37 +674,50 @@ views::ProposedLayout PinnedTabContainerView::CalculateHorizontalLayout(
  }
  
  views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
@@ -1001,11 +1003,9 @@ index e2d93808d..0ad9b13fd 100644
 +  if (children_on_row > 0 && size_bounds.width().is_bounded() &&
 +      size_bounds.width().value() > 0) {
      auto collapse_state = GetTabStripCollapseState();
-
+ 
      // Apply horizontal padding immediately at start of collapse animation by
-     // including collapsing state.
-     int available_width =
-@@ -425,13 +740,14 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+@@ -431,13 +746,14 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
    }
  
    int row_index = 0;
@@ -1022,7 +1022,7 @@ index e2d93808d..0ad9b13fd 100644
      if (!should_show_child) {
        layouts.child_layouts.emplace_back(child, false, gfx::Rect());
        continue;
-@@ -467,13 +783,101 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+@@ -473,13 +789,101 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
      layouts.child_layouts.emplace_back(child, true, bounds);
    }
  
@@ -1405,7 +1405,7 @@ index 1767160a0..6680ca19b 100644
        widget_observation_{this};
  };
 diff --git a/chrome/browser/ui/views/tabs/common/tab_view.cc b/chrome/browser/ui/views/tabs/common/tab_view.cc
-index cb16b620a..98d9b9b52 100644
+index bff34ed0c..7e18a13b9 100644
 --- a/chrome/browser/ui/views/tabs/common/tab_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_view.cc
 @@ -56,6 +56,7 @@
@@ -1416,7 +1416,7 @@ index cb16b620a..98d9b9b52 100644
  #include "chrome/common/buildflags.h"
  #include "chrome/grit/generated_resources.h"
  #include "chrome/grit/theme_resources.h"
-@@ -1083,7 +1084,7 @@ void TabView::OnTabStateChanged() {
+@@ -1085,7 +1086,7 @@ void TabView::OnTabStateChanged() {
  
    active_ = tab_strip_model->IsTabInForeground(index);
    split_ = tab->IsSplit();
@@ -1425,7 +1425,7 @@ index cb16b620a..98d9b9b52 100644
  
    SetSelection(tab->IsSelected());
    UpdateTabData(tab_data_observer_->tab_data());
-@@ -1095,6 +1096,13 @@ void TabView::OnTabStateChanged() {
+@@ -1097,6 +1098,13 @@ void TabView::OnTabStateChanged() {
    InvalidateLayout();
  }
  
