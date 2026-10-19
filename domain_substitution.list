@@ -2306,6 +2306,7 @@ chrome/browser/ui/webui/side_panel/customize_chrome/wallpaper_search/wallpaper_s
 chrome/browser/ui/webui/side_panel/customize_chrome/wallpaper_search/wallpaper_search_handler_unittest.cc
 chrome/browser/ui/webui/side_panel/customize_chrome/wallpaper_search/wallpaper_search_interactive_uitest.cc
 chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_page_handler.cc
+chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_page_handler.h
 chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_ui.cc
 chrome/browser/ui/webui/side_panel/reading_list/reading_list_page_handler_unittest.cc
 chrome/browser/ui/webui/signin/ash/edu_account_login_handler_unittest.cc
@@ -7941,7 +7942,6 @@ third_party/depot_tools/tests/split_cl_test.py
 third_party/depot_tools/tests/watchlists_unittest.py
 third_party/depot_tools/watchlists.py
 third_party/depot_tools/win32imports.py
-third_party/depot_tools/win_toolchain/get_toolchain_if_necessary.py
 third_party/devtools-frontend/src/.agents/skills/gerrit-cli/scripts/import_upstream.py
 third_party/devtools-frontend/src/PRESUBMIT.py
 third_party/devtools-frontend/src/build_overrides/BUILDCONFIG.gn

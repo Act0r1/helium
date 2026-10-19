@@ -226,13 +226,15 @@ helium/core/force-paste-action.patch
 helium/core/shift-right-click-context-menu.patch
 helium/core/crash-reporter-privacy-tweaks.patch
 helium/core/crash-reporting-prefs.patch
-helium/core/disable-omnibox-webui.patch
+helium/core/remove-unused-ai-resources.patch
+helium/core/remove-experimental-webui.patch
 helium/core/rbe-nativelink-config.patch
 helium/core/disable-non-standard-auth-features.patch
 helium/core/use-system-python3.patch
 helium/core/lazy-session-restore.patch
 helium/core/enable-back-to-opener.patch
 helium/core/ridiculous-google-compat-exceptions.patch
+helium/core/disable-password-manager.patch
 
 helium/settings/settings-page-icons.patch
 helium/settings/move-search-suggest.patch
@@ -259,8 +261,6 @@ helium/settings/crash-reporting-settings.patch
 helium/settings/helium-noise-settings.patch
 helium/settings/network-and-security-page.patch
 helium/settings/sync-setup-contract.patch
-
-helium/hop/setup.patch
 
 helium/ui/layout-constants.patch
 helium/ui/layout-provider.patch
