@@ -1,0 +1,489 @@
+diff --git a/chrome/browser/ui/color/omnibox_color_mixer.cc b/chrome/browser/ui/color/omnibox_color_mixer.cc
+index 3a4e4aae8..1a07cd9ec 100644
+--- a/chrome/browser/ui/color/omnibox_color_mixer.cc
++++ b/chrome/browser/ui/color/omnibox_color_mixer.cc
+@@ -231,6 +231,17 @@ void ApplyComposeboxBaselineColors(ui::ColorMixer& mixer,
+       SK_ColorWHITE);
+ }
+ 
++// Argon dark theme: the popup and the location bar tinted with the accent, and
++// lighter rows on hover and selection.
++void ApplyArgonOmniboxColors(ui::ColorMixer& mixer) {
++  mixer[kColorOmniboxResultsBackground] =
++      ui::AlphaBlend(ui::kColorSysPrimary, ui::kColorSysBase, 0x40);
++  mixer[kColorOmniboxResultsBackgroundHovered] =
++      ui::BlendTowardMaxContrast(kColorOmniboxResultsBackground, 0x14);
++  mixer[kColorOmniboxResultsBackgroundSelected] =
++      ui::BlendTowardMaxContrast(kColorOmniboxResultsBackground, 0x26);
++}
++
+ // Apply updates to the Omnibox color tokens per CR2023 guidelines.
+ void ApplyOmniboxCR2023Colors(ui::ColorMixer& mixer,
+                               const ui::ColorProviderKey& key) {
+@@ -248,6 +259,11 @@ void ApplyOmniboxCR2023Colors(ui::ColorMixer& mixer,
+   ApplyGM3OmniboxTextColor(mixer, key);
+   ApplyCR2023OmniboxExpandedStateColors(mixer, key);
+   ApplyCR2023OmniboxIconColors(mixer, key);
++  if (key.color_mode == ui::ColorProviderKey::ColorMode::kDark &&
++      key.user_color_source == ui::ColorProviderKey::UserColorSource::kAccent &&
++      key.user_color.has_value()) {
++    ApplyArgonOmniboxColors(mixer);
++  }
+ }
+ 
+ }  // namespace
+diff --git a/chrome/browser/ui/views/location_bar/BUILD.gn b/chrome/browser/ui/views/location_bar/BUILD.gn
+index ebf507257..41cddb12a 100644
+--- a/chrome/browser/ui/views/location_bar/BUILD.gn
++++ b/chrome/browser/ui/views/location_bar/BUILD.gn
+@@ -99,6 +99,8 @@ source_set("impl") {
+       "omnibox_chip_button.cc",
+       "omnibox_popup_file_selector.cc",
+       "record_replay_page_action_controller.cc",
++      "search_engine_chip_view.cc",
++      "search_engine_chip_view.h",
+       "selected_keyword_view.cc",
+       "webui_content_setting_image_control.cc",
+       "webui_location_bar.cc",
+diff --git a/chrome/browser/ui/views/location_bar/location_bar_view.cc b/chrome/browser/ui/views/location_bar/location_bar_view.cc
+index c167caf0a..5c39d290a 100644
+--- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
++++ b/chrome/browser/ui/views/location_bar/location_bar_view.cc
+@@ -70,6 +70,7 @@
+ #include "chrome/browser/ui/views/location_bar/location_icon_state_helper.h"
+ #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
+ #include "chrome/browser/ui/views/location_bar/omnibox_popup_file_selector.h"
++#include "chrome/browser/ui/views/location_bar/search_engine_chip_view.h"
+ #include "chrome/browser/ui/views/location_bar/selected_keyword_view.h"
+ #include "chrome/browser/ui/views/omnibox/omnibox_context_menu.h"
+ #include "chrome/browser/ui/views/omnibox/omnibox_popup_aim_presenter.h"
+@@ -118,6 +119,7 @@
+ #include "components/search_engines/template_url_service.h"
+ #include "components/security_state/core/security_state.h"
+ #include "components/startup_metric_utils/common/startup_metric_utils.h"
++#include "components/vector_icons/vector_icons.h"
+ #include "content/public/browser/navigation_controller.h"
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/render_widget_host_view.h"
+@@ -529,6 +531,23 @@ void LocationBarView::Init() {
+   clear_all_button_ = AddChildView(std::move(clear_all_button));
+   RefreshClearAllButtonIcon();
+ 
++  search_engine_chip_ = AddChildView(
++      std::make_unique<SearchEngineChipView>(omnibox_controller_.get()));
++  search_engine_chip_->SetVisible(false);
++
++  go_button_ = AddChildView(views::CreateVectorImageButton(base::BindRepeating(
++      [](OmniboxController* controller) {
++        controller->edit_model()->OpenCurrentSelection();
++      },
++      base::Unretained(omnibox_controller_.get()))));
++  SetImageFromVectorIconWithColor(go_button_, vector_icons::kArrowForwardIcon,
++                                  {kColorLocationBarClearAllButtonIcon,
++                                   kColorLocationBarClearAllButtonIconDisabled});
++  go_button_->SetBorder(views::CreateEmptyBorder(
++      GetLayoutInsets(LOCATION_BAR_ICON_INTERIOR_PADDING)));
++  go_button_->SetFocusBehavior(FocusBehavior::NEVER);
++  go_button_->SetVisible(false);
++
+   auto ai_mode_hint_label = std::make_unique<views::Label>(
+       std::u16string(), CONTEXT_OMNIBOX_PRIMARY, views::style::STYLE_PRIMARY);
+   ai_mode_hint_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+@@ -913,7 +932,16 @@ void LocationBarView::Layout(PassKey) {
+     }
+   }
+ 
+-  if (ShouldShowKeywordBubble()) {
++  search_engine_chip_->SetVisible(omnibox_controller_->IsPopupOpen() &&
++                                  !ShouldShowKeywordBubble() &&
++                                  !show_overriding_permission_chip);
++  if (search_engine_chip_->GetVisible()) {
++    location_icon_view_->SetVisible(false);
++    leading_decorations.AddDecoration(vertical_padding + 2,
++                                      std::max(location_height - 4, 0), false,
++                                      0, leading_intra_padding, icon_left,
++                                      search_engine_chip_);
++  } else if (ShouldShowKeywordBubble()) {
+     location_icon_view_->SetVisible(false);
+     leading_decorations.AddDecoration(
+         vertical_padding, location_height, false, kLeadingDecorationMaxFraction,
+@@ -943,6 +971,9 @@ void LocationBarView::Layout(PassKey) {
+     }
+   };
+ 
++  add_trailing_decoration(go_button_, /*intra_item_padding=*/0,
++                          /*edge_padding=*/trailing_decorations_edge_padding);
++
+   if (features::IsPageActionsElevatedToolbarEnabled()) {
+     if (page_action_container_ && page_action_container_->GetVisible()) {
+       const bool is_capsule_active = page_action_container_->IsCapsuleActive();
+@@ -1971,6 +2002,10 @@ void LocationBarView::OnPopupStateChanged(OmniboxPopupState old_state,
+       break;
+   }
+ 
++  if (new_state != OmniboxPopupState::kNone) {
++    search_engine_chip_->Update();
++  }
++
+   // Perform UI updates that apply to any popup state change.
+   RefreshBackground();
+   UpdateWithoutTabRestore();
+@@ -2082,6 +2117,10 @@ void LocationBarView::OnChanged() {
+       GetOmniboxController()->edit_model()->user_input_in_progress() &&
+       !omnibox_view_->GetText().empty() &&
+       IsVirtualKeyboardVisible(GetWidget()));
++  go_button_->SetVisible(
++      omnibox_view_ && GetOmniboxController()->IsPopupOpen() &&
++      GetOmniboxController()->edit_model()->user_input_in_progress() &&
++      !omnibox_view_->GetText().empty());
+ 
+   InvalidateLayout();
+   SchedulePaint();
+diff --git a/chrome/browser/ui/views/location_bar/location_bar_view.h b/chrome/browser/ui/views/location_bar/location_bar_view.h
+index 839bf4aef..57fc386fc 100644
+--- a/chrome/browser/ui/views/location_bar/location_bar_view.h
++++ b/chrome/browser/ui/views/location_bar/location_bar_view.h
+@@ -67,6 +67,7 @@ class OmniboxViewViews;
+ class PermissionChipView;
+ class PermissionDashboardView;
+ class Profile;
++class SearchEngineChipView;
+ class SelectedKeywordView;
+ class PrefChangeRegistrar;
+ 
+@@ -602,6 +603,13 @@ class LocationBarView
+   // user to clear all text.
+   raw_ptr<views::ImageButton> clear_all_button_ = nullptr;
+ 
++  // Search engine picker shown in place of the location icon while the popup
++  // is open.
++  raw_ptr<SearchEngineChipView> search_engine_chip_ = nullptr;
++
++  // An arrow that accepts the input, shown while the popup is open.
++  raw_ptr<views::ImageButton> go_button_ = nullptr;
++
+   // A label to show the AI Mode hint text.
+   raw_ptr<views::Label> ai_mode_hint_label_ = nullptr;
+ 
+diff --git a/chrome/browser/ui/views/location_bar/search_engine_chip_view.cc b/chrome/browser/ui/views/location_bar/search_engine_chip_view.cc
+new file mode 100644
+index 000000000..b693b0294
+--- /dev/null
++++ b/chrome/browser/ui/views/location_bar/search_engine_chip_view.cc
+@@ -0,0 +1,132 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/location_bar/search_engine_chip_view.h"
++
++#include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/omnibox/omnibox_controller.h"
++#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
++#include "components/omnibox/browser/omnibox_client.h"
++#include "components/search_engines/template_url.h"
++#include "components/search_engines/template_url_service.h"
++#include "components/vector_icons/vector_icons.h"
++#include "third_party/metrics_proto/omnibox_event.pb.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/models/image_model.h"
++#include "ui/base/mojom/menu_source_type.mojom.h"
++#include "ui/color/color_id.h"
++#include "ui/gfx/image/image.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/background.h"
++#include "ui/views/controls/image_view.h"
++#include "ui/views/controls/menu/menu_runner.h"
++#include "ui/views/layout/box_layout.h"
++
++namespace {
++
++constexpr int kIconSize = 16;
++constexpr int kChevronSize = 14;
++
++}  // namespace
++
++SearchEngineChipView::SearchEngineChipView(OmniboxController* omnibox_controller)
++    : views::Button(base::BindRepeating(&SearchEngineChipView::ShowMenu,
++                                        base::Unretained(this))),
++      omnibox_controller_(omnibox_controller) {
++  // Clicking the chip must keep the omnibox focused and its popup open.
++  SetFocusBehavior(FocusBehavior::NEVER);
++
++  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(0, 6), 2));
++  layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kCenter);
++
++  favicon_view_ = AddChildView(std::make_unique<views::ImageView>());
++  favicon_view_->SetImageSize(gfx::Size(kIconSize, kIconSize));
++  AddChildView(std::make_unique<views::ImageView>(
++      ui::ImageModel::FromVectorIcon(vector_icons::kKeyboardArrowDownIcon,
++                                     kColorOmniboxResultsIcon, kChevronSize)));
++}
++
++SearchEngineChipView::~SearchEngineChipView() = default;
++
++void SearchEngineChipView::Update() {
++  OmniboxClient* client = omnibox_controller_->client();
++  if (const TemplateURL* engine =
++          client->GetTemplateURLService()->GetDefaultSearchProvider()) {
++    SetTooltipText(engine->short_name());
++    GetViewAccessibility().SetName(engine->short_name());
++  }
++
++  favicon_view_->SetImage(ui::ImageModel::FromVectorIcon(
++      vector_icons::kSearchIcon, kColorOmniboxResultsIcon, kIconSize));
++  const gfx::Image favicon = client->GetFaviconForDefaultSearchProvider(
++      base::BindOnce(&SearchEngineChipView::SetFavicon,
++                     weak_factory_.GetWeakPtr()));
++  if (!favicon.IsEmpty()) {
++    SetFavicon(favicon);
++  }
++}
++
++void SearchEngineChipView::OnBoundsChanged(const gfx::Rect& previous_bounds) {
++  views::Button::OnBoundsChanged(previous_bounds);
++  SetBackground(views::CreateRoundedRectBackground(
++      kColorOmniboxResultsBackgroundSelected, height() / 2.0f));
++}
++
++void SearchEngineChipView::ExecuteCommand(int command_id, int event_flags) {
++  const TemplateURL* engine =
++      omnibox_controller_->client()
++          ->GetTemplateURLService()
++          ->GetTemplateURLForKeyword(keywords_[command_id]);
++  if (engine) {
++    omnibox_controller_->edit_model()->EnterKeywordMode(
++        metrics::OmniboxEventProto::CLICK_HINT_VIEW, engine, u"");
++  }
++}
++
++void SearchEngineChipView::ShowMenu() {
++  OmniboxClient* client = omnibox_controller_->client();
++  TemplateURLService* service = client->GetTemplateURLService();
++  const TemplateURL* default_engine = service->GetDefaultSearchProvider();
++
++  std::vector<const TemplateURL*> engines;
++  if (default_engine) {
++    engines.push_back(default_engine);
++  }
++  for (const TemplateURL* engine : service->GetTemplateURLs()) {
++    if (engine != default_engine && service->ShowInDefaultList(engine)) {
++      engines.push_back(engine);
++    }
++  }
++
++  keywords_.clear();
++  menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  for (const TemplateURL* engine : engines) {
++    const gfx::Image favicon = client->GetFaviconForKeywordSearchProvider(
++        engine, base::DoNothing());
++    menu_model_->AddItemWithIcon(
++        static_cast<int>(keywords_.size()), engine->short_name(),
++        favicon.IsEmpty()
++            ? ui::ImageModel::FromVectorIcon(vector_icons::kSearchIcon,
++                                             ui::kColorMenuIcon, kIconSize)
++            : ui::ImageModel::FromImage(favicon));
++    keywords_.push_back(engine->keyword());
++  }
++
++  menu_runner_ = std::make_unique<views::MenuRunner>(
++      menu_model_.get(), views::MenuRunner::NO_FLAGS);
++  menu_runner_->RunMenuAt(GetWidget(), nullptr, GetAnchorBoundsInScreen(),
++                          views::MenuAnchorPosition::kTopLeft,
++                          ui::mojom::MenuSourceType::kMouse);
++}
++
++void SearchEngineChipView::SetFavicon(const gfx::Image& favicon) {
++  favicon_view_->SetImage(ui::ImageModel::FromImage(favicon));
++}
++
++BEGIN_METADATA(SearchEngineChipView)
++END_METADATA
+diff --git a/chrome/browser/ui/views/location_bar/search_engine_chip_view.h b/chrome/browser/ui/views/location_bar/search_engine_chip_view.h
+new file mode 100644
+index 000000000..8c7f5e846
+--- /dev/null
++++ b/chrome/browser/ui/views/location_bar/search_engine_chip_view.h
+@@ -0,0 +1,64 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_SEARCH_ENGINE_CHIP_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_SEARCH_ENGINE_CHIP_VIEW_H_
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/menus/simple_menu_model.h"
++#include "ui/views/controls/button/button.h"
++
++class OmniboxController;
++
++namespace gfx {
++class Image;
++}  // namespace gfx
++
++namespace views {
++class ImageView;
++class MenuRunner;
++}  // namespace views
++
++// Pill with the default search engine icon and a chevron, shown in the location
++// bar while the omnibox popup is open. Its menu lists the search engines;
++// choosing one starts a one-off search with it in keyword mode.
++class SearchEngineChipView : public views::Button,
++                             public ui::SimpleMenuModel::Delegate {
++  METADATA_HEADER(SearchEngineChipView, views::Button)
++
++ public:
++  explicit SearchEngineChipView(OmniboxController* omnibox_controller);
++  SearchEngineChipView(const SearchEngineChipView&) = delete;
++  SearchEngineChipView& operator=(const SearchEngineChipView&) = delete;
++  ~SearchEngineChipView() override;
++
++  // Shows the icon and name of the current default search engine.
++  void Update();
++
++  // views::Button:
++  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
++
++  // ui::SimpleMenuModel::Delegate:
++  void ExecuteCommand(int command_id, int event_flags) override;
++
++ private:
++  void ShowMenu();
++  void SetFavicon(const gfx::Image& favicon);
++
++  raw_ptr<OmniboxController> omnibox_controller_;
++  raw_ptr<views::ImageView> favicon_view_ = nullptr;
++  // Keywords of the engines in the menu, indexed by command id.
++  std::vector<std::u16string> keywords_;
++  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
++  std::unique_ptr<views::MenuRunner> menu_runner_;
++  base::WeakPtrFactory<SearchEngineChipView> weak_factory_{this};
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_SEARCH_ENGINE_CHIP_VIEW_H_
+diff --git a/chrome/browser/ui/views/omnibox/omnibox_match_cell_view.h b/chrome/browser/ui/views/omnibox/omnibox_match_cell_view.h
+index 523981239..83e4ac5ab 100644
+--- a/chrome/browser/ui/views/omnibox/omnibox_match_cell_view.h
++++ b/chrome/browser/ui/views/omnibox/omnibox_match_cell_view.h
+@@ -34,7 +34,7 @@ class OmniboxMatchCellView : public views::View {
+ 
+   // The height of the standard 1-line match row. Multiline & IPH matches have
+   // larger heights.
+-  static constexpr int kRowHeight = 28;
++  static constexpr int kRowHeight = 34;
+ 
+   // The width of icon, answer, and entity image bounds. These images are
+   // smaller than this bounds; they'll be centered within the bounds.
+diff --git a/chrome/browser/ui/views/omnibox/omnibox_result_view.cc b/chrome/browser/ui/views/omnibox/omnibox_result_view.cc
+index 014f69762..faead6487 100644
+--- a/chrome/browser/ui/views/omnibox/omnibox_result_view.cc
++++ b/chrome/browser/ui/views/omnibox/omnibox_result_view.cc
+@@ -94,7 +94,7 @@ class OmniboxResultViewButton : public views::ImageButton {
+ BEGIN_METADATA(OmniboxResultViewButton)
+ END_METADATA
+ 
+-constexpr float kIPHBackgroundBorderRadius = 8;
++constexpr float kIPHBackgroundBorderRadius = 10;
+ 
+ }  // namespace
+ 
+diff --git a/chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.cc b/chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.cc
+index 252c72c73..1ee3915a5 100644
+--- a/chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.cc
++++ b/chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.cc
+@@ -10,6 +10,7 @@
+ #include "base/functional/bind.h"
+ #include "base/memory/raw_ptr.h"
+ #include "build/build_config.h"
++#include "cc/paint/paint_flags.h"
+ #include "chrome/browser/themes/theme_service.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
+@@ -24,9 +25,12 @@
+ #include "ui/base/metadata/metadata_header_macros.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/base/pointer/touch_ui_controller.h"
++#include "ui/color/color_id.h"
+ #include "ui/compositor/layer.h"
++#include "ui/gfx/canvas.h"
+ #include "ui/gfx/geometry/rounded_corners_f.h"
+ #include "ui/views/bubble/bubble_border.h"
++#include "ui/views/controls/focus_ring.h"
+ #include "ui/views/layout/layout_provider.h"
+ #include "ui/views/metadata/view_factory.h"
+ #include "ui/views/view_utils.h"
+@@ -42,6 +46,8 @@
+ 
+ namespace {
+ 
++constexpr int kCornerRadius = 16;
++
+ #if !defined(USE_AURA)
+ 
+ struct WidgetEventPair {
+@@ -175,6 +181,25 @@ class TopBackgroundView : public views::View {
+         SkBlendMode::kSrc, false));
+   }
+ 
++  // Draws the focus ring around the hole: the location bar's own ring would be
++  // clipped by the stroke above.
++  void OnPaint(gfx::Canvas* canvas) override {
++    views::View::OnPaint(canvas);
++    constexpr float kThickness = views::FocusRing::kDefaultHaloThickness;
++    const gfx::Size size = location_bar_->Bounds().size();
++    gfx::RectF bounds{gfx::SizeF(size)};
++    bounds.Inset(kThickness / 2);
++    cc::PaintFlags flags;
++    flags.setAntiAlias(true);
++    flags.setStyle(cc::PaintFlags::kStroke_Style);
++    flags.setStrokeWidth(kThickness);
++    flags.setColor(
++        GetColorProvider()->GetColor(ui::kColorFocusableBorderFocused));
++    canvas->DrawRoundRect(
++        bounds, LocationBarView::ComputeBorderRadius(size) - kThickness / 2,
++        flags);
++  }
++
+ #if !defined(USE_AURA)
+   // For non-Aura platforms, forward mouse events and cursor requests intended
+   // for the omnibox to the proper Widgets/Views. For Aura platforms, this is
+@@ -235,7 +260,7 @@ RoundedOmniboxResultsFrame::RoundedOmniboxResultsFrame(
+     LocationBar* location_bar,
+     bool forward_mouse_events)
+     : contents_(contents), forward_mouse_events_(forward_mouse_events) {
+-  const int corner_radius = 12;
++  const int corner_radius = kCornerRadius;
+   auto* webui_content = GetOmniboxPopupWebUIBaseContent();
+   const bool masks_to_bounds =
+       webui_content && webui_content->ShouldSizeWebViewToPreferredHeight();
+@@ -305,7 +330,7 @@ int RoundedOmniboxResultsFrame::GetNonResultSectionHeight(bool include_cutout) {
+ 
+ // static
+ gfx::Insets RoundedOmniboxResultsFrame::GetLocationBarAlignmentInsets() {
+-  return gfx::Insets::TLBR(3, 7, 0, 7);
++  return gfx::Insets::TLBR(6, 8, 4, 8);
+ }
+ 
+ // static
+@@ -342,8 +367,7 @@ void RoundedOmniboxResultsFrame::SetCutoutVisibility(bool visible) {
+ }
+ 
+ void RoundedOmniboxResultsFrame::SetElevation(int elevation) {
+-  const int corner_radius = views::LayoutProvider::Get()->GetCornerRadiusMetric(
+-      views::ShapeContextTokens::kOmniboxExpandedRadius);
++  const int corner_radius = kCornerRadius;
+   auto border = std::make_unique<views::BubbleBorder>(
+       views::BubbleBorder::Arrow::NONE,
+       elevation == 0 ? views::BubbleBorder::Shadow::NO_SHADOW
