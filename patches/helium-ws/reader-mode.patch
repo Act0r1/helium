@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/ui/browser_actions.cc b/chrome/browser/ui/browser_actions.cc
-index 9540866af..bd9214b5f 100644
+index 84cecee86..e4e7ad134 100644
 --- a/chrome/browser/ui/browser_actions.cc
 +++ b/chrome/browser/ui/browser_actions.cc
-@@ -58,6 +58,10 @@
+@@ -59,6 +59,10 @@
  #include "components/search_engines/ai_mode_button_config.h"
  #include "components/search_engines/ai_mode_button_service.h"
  #include "components/tab_groups/tab_group_id.h"
@@ -13,7 +13,7 @@ index 9540866af..bd9214b5f 100644
  #include "content/public/browser/web_contents.h"
  #include "content/public/common/page_zoom.h"
  #include "ui/base/interaction/element_identifier.h"
-@@ -444,8 +448,27 @@ void BrowserActions::InitializeSidePanelActions() {
+@@ -482,8 +486,27 @@ void BrowserActions::InitializeSidePanelActions() {
            base::BindRepeating(
                [](BrowserWindowInterface* bwi, actions::ActionItem* item,
                   actions::ActionInvocationContext context) {
@@ -44,7 +44,7 @@ index 9540866af..bd9214b5f 100644
                bwi))
            .SetActionId(kActionSidePanelShowReadAnything)
 diff --git a/chrome/browser/ui/read_anything/read_anything_controller.cc b/chrome/browser/ui/read_anything/read_anything_controller.cc
-index 22dcaf88c..056aa6bb7 100644
+index 7d255d1d6..c42ea6003 100644
 --- a/chrome/browser/ui/read_anything/read_anything_controller.cc
 +++ b/chrome/browser/ui/read_anything/read_anything_controller.cc
 @@ -22,6 +22,8 @@
@@ -56,37 +56,46 @@ index 22dcaf88c..056aa6bb7 100644
  #include "chrome/browser/ui/tabs/public/tab_features.h"
  #include "chrome/browser/ui/tabs/tab_model.h"
  #include "chrome/browser/ui/tabs/tab_strip_model.h"
-@@ -125,7 +127,8 @@ ReadAnythingController::ReadAnythingController(
+@@ -129,9 +131,10 @@ ReadAnythingController::ReadAnythingController(
            &ReadAnythingController::MaybeUpdateFindBarController,
            base::Unretained(this))));
  
--  if (features::IsReadAnythingOmniboxChipEnabled()) {
-+  if (tab_->GetTabFeatures()->page_action_controller()->ActionExists(
+-  if (features::IsReadAnythingOmniboxChipEnabled() &&
+-      tab_->GetBrowserWindowInterface() && tab_->GetTabFeatures() &&
+-      tab_->GetTabFeatures()->page_action_controller()) {
++  if (tab_->GetBrowserWindowInterface() && tab_->GetTabFeatures() &&
++      tab_->GetTabFeatures()->page_action_controller() &&
++      tab_->GetTabFeatures()->page_action_controller()->ActionExists(
 +          kActionSidePanelShowReadAnything)) {
      omnibox_controller_ = std::make_unique<ReadAnythingOmniboxController>(tab_);
    }
  
 diff --git a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
-index 94a8ce37f..806b682e4 100644
+index e1188fccf..de7ac10e7 100644
 --- a/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
 +++ b/chrome/browser/ui/read_anything/read_anything_omnibox_controller.cc
-@@ -13,6 +13,8 @@
- #include "chrome/browser/ui/read_anything/read_anything_side_panel_controller_utils.h"
+@@ -12,6 +12,8 @@
+ #include "chrome/browser/ui/read_anything/read_anything_entry_point_controller.h"
+ #include "chrome/browser/ui/read_anything/read_anything_enums.h"
  #include "chrome/browser/ui/tabs/public/tab_features.h"
- #include "chrome/browser/ui/ui_features.h"
 +#include "components/dom_distiller/core/url_utils.h"
 +#include "content/public/browser/navigation_handle.h"
  #include "content/public/browser/page.h"
  #include "content/public/browser/web_contents.h"
- #include "read_anything_entry_point_controller.h"
-@@ -25,14 +27,6 @@ ReadAnythingOmniboxController::ReadAnythingOmniboxController(
+ #include "services/metrics/public/cpp/ukm_builders.h"
+@@ -23,17 +25,12 @@ ReadAnythingOmniboxController::ReadAnythingOmniboxController(
      : tabs::ContentsObservingTabFeature(*tab),
        PageActionObserver(kActionSidePanelShowReadAnything),
        tab_(tab) {
 -  // This class should only be instantiated if the omnibox entrypoint is
--  // enabled.
+-  // enabled and the tab has the required window and page action features.
 -  CHECK(features::IsReadAnythingOmniboxChipEnabled());
--
++  // This class should only be instantiated if the tab has the required window
++  // and page action features.
+   CHECK(tab_->GetBrowserWindowInterface());
+   CHECK(tab_->GetTabFeatures());
+   CHECK(tab_->GetTabFeatures()->page_action_controller());
+ 
 -  read_anything::ReadAnythingEntryPointController::
 -      RegisterForSuggestReadingMode(
 -          tab_->GetBrowserWindowInterface()->GetProfile());
@@ -94,7 +103,7 @@ index 94a8ce37f..806b682e4 100644
    RegisterAsPageActionObserver(
        *tab_->GetTabFeatures()->page_action_controller());
    tab_subscriptions_.push_back(tab_->RegisterWillDetach(
-@@ -91,10 +85,6 @@ void ReadAnythingOmniboxController::Activate(
+@@ -92,10 +89,6 @@ void ReadAnythingOmniboxController::Activate(
        base::UmaHistogramEnumeration(
            "Accessibility.ReadAnything.EntryPointAfterOmnibox", open_trigger);
      }
@@ -105,7 +114,7 @@ index 94a8ce37f..806b682e4 100644
      if (open_trigger == ReadAnythingOpenTrigger::kOmniboxChip) {
        was_triggered_ = true;
      }
-@@ -134,8 +124,8 @@ void ReadAnythingOmniboxController::OnDiscardContents(
+@@ -135,8 +128,8 @@ void ReadAnythingOmniboxController::OnDiscardContents(
    tabs::ContentsObservingTabFeature::OnDiscardContents(tab, old_contents,
                                                         new_contents);
    LogUkm();
@@ -116,7 +125,7 @@ index 94a8ce37f..806b682e4 100644
    StopTimers();
    was_last_checked_page_distillable_ = false;
    was_page_checked_ = false;
-@@ -152,14 +142,24 @@ void ReadAnythingOmniboxController::PrimaryPageChanged(content::Page& page) {
+@@ -153,14 +146,24 @@ void ReadAnythingOmniboxController::PrimaryPageChanged(content::Page& page) {
    }
  
    StopTimers();
@@ -145,7 +154,7 @@ index 94a8ce37f..806b682e4 100644
  }
  
  void ReadAnythingOmniboxController::DebounceCheckSuggestion() {
-@@ -183,12 +183,21 @@ void ReadAnythingOmniboxController::CheckIfShouldSuggestReadingMode() {
+@@ -184,12 +187,21 @@ void ReadAnythingOmniboxController::CheckIfShouldSuggestReadingMode() {
      return;
    }
  
@@ -173,7 +182,7 @@ index 94a8ce37f..806b682e4 100644
  }
  
  void ReadAnythingOmniboxController::OnShouldSuggestReadingModeResult(
-@@ -216,10 +225,13 @@ void ReadAnythingOmniboxController::UpdateVisibility(bool should_show) {
+@@ -217,10 +229,13 @@ void ReadAnythingOmniboxController::UpdateVisibility(bool should_show) {
      return;
    }
  
@@ -191,7 +200,7 @@ index 94a8ce37f..806b682e4 100644
  }
  
  void ReadAnythingOmniboxController::OnPageActionIconShown(
-@@ -227,26 +239,7 @@ void ReadAnythingOmniboxController::OnPageActionIconShown(
+@@ -228,26 +243,7 @@ void ReadAnythingOmniboxController::OnPageActionIconShown(
    was_shown_ = true;
  }
  
@@ -219,7 +228,7 @@ index 94a8ce37f..806b682e4 100644
  
  void ReadAnythingOmniboxController::OnShowPromoResult(
      user_education::FeaturePromoResult result) {
-@@ -279,9 +272,7 @@ void ReadAnythingOmniboxController::StopTimers() {
+@@ -280,9 +276,7 @@ void ReadAnythingOmniboxController::StopTimers() {
  }
  
  bool ReadAnythingOmniboxController::IsIrrelevant() {
@@ -772,7 +781,7 @@ index 2a66fda8c..d0ae0aa08 100644
 +  }
  }
 diff --git a/components/dom_distiller/core/distilled_page_prefs.cc b/components/dom_distiller/core/distilled_page_prefs.cc
-index 3151a239a..43a605c23 100644
+index 7a43ec612..e2ab34222 100644
 --- a/components/dom_distiller/core/distilled_page_prefs.cc
 +++ b/components/dom_distiller/core/distilled_page_prefs.cc
 @@ -42,6 +42,10 @@ DistilledPagePrefs::DistilledPagePrefs(PrefService* pref_service)
@@ -809,7 +818,7 @@ index 3151a239a..43a605c23 100644
  void DistilledPagePrefs::AddObserver(Observer* obs) {
    observers_.AddObserver(obs);
  }
-@@ -231,4 +244,11 @@ void DistilledPagePrefs::NotifyOnChangeLinksEnabled() {
+@@ -230,4 +243,11 @@ void DistilledPagePrefs::NotifyOnChangeLinksEnabled() {
    }
  }
  
@@ -822,10 +831,10 @@ index 3151a239a..43a605c23 100644
 +
  }  // namespace dom_distiller
 diff --git a/components/dom_distiller/core/distilled_page_prefs.h b/components/dom_distiller/core/distilled_page_prefs.h
-index 8be6c7adc..d5a437d6c 100644
+index 884bf31b9..17225b13b 100644
 --- a/components/dom_distiller/core/distilled_page_prefs.h
 +++ b/components/dom_distiller/core/distilled_page_prefs.h
-@@ -41,6 +41,7 @@ class DistilledPagePrefs {
+@@ -39,6 +39,7 @@ class DistilledPagePrefs {
                                 ThemeSettingsUpdateSource source) = 0;
      virtual void OnChangeFontScaling(float scaling) = 0;
      virtual void OnChangeLinksEnabled(bool enabled) = 0;
@@ -833,7 +842,7 @@ index 8be6c7adc..d5a437d6c 100644
    };
  
    explicit DistilledPagePrefs(PrefService* pref_service);
-@@ -93,6 +94,11 @@ class DistilledPagePrefs {
+@@ -91,6 +92,11 @@ class DistilledPagePrefs {
    // Returns whether links are enabled in distilled pages.
    bool GetLinksEnabled();
  
@@ -845,7 +854,7 @@ index 8be6c7adc..d5a437d6c 100644
    void AddObserver(Observer* obs);
    void RemoveObserver(Observer* obs);
  
-@@ -115,12 +121,14 @@ class DistilledPagePrefs {
+@@ -113,12 +119,14 @@ class DistilledPagePrefs {
    void NotifyOnChangeFontScaling();
    // Notifies all Observers of new links enabled state.
    void NotifyOnChangeLinksEnabled();
@@ -862,7 +871,7 @@ index 8be6c7adc..d5a437d6c 100644
  
    base::WeakPtrFactory<DistilledPagePrefs> weak_ptr_factory_{this};
 diff --git a/components/dom_distiller/core/dom_distiller_features.cc b/components/dom_distiller/core/dom_distiller_features.cc
-index fcec9a6a8..6855ffae1 100644
+index 26e591794..fc16ef428 100644
 --- a/components/dom_distiller/core/dom_distiller_features.cc
 +++ b/components/dom_distiller/core/dom_distiller_features.cc
 @@ -21,8 +21,7 @@
@@ -1427,30 +1436,30 @@ index 59de32319..6b2c8f929 100644
  inline constexpr char kReaderForAccessibility[] =
      "dom_distiller.reader_for_accessibility";
 diff --git a/components/dom_distiller/core/viewer.cc b/components/dom_distiller/core/viewer.cc
-index 6465fc348..b06aef6b3 100644
+index a07b94e56..d95d73ca0 100644
 --- a/components/dom_distiller/core/viewer.cc
 +++ b/components/dom_distiller/core/viewer.cc
-@@ -418,6 +418,10 @@ const std::string GetDistilledPageLinksEnabledJs(bool enabled) {
-   return "setLinksEnabled(" + base::ToString(enabled) + ");";
+@@ -418,6 +418,10 @@ std::string GetDistilledPageLinksEnabledJs(bool enabled) {
+   return base::StrCat({"setLinksEnabled(", base::ToString(enabled), ");"});
  }
  
-+const std::string GetDistilledPageWideColumnJs(bool wide) {
++std::string GetDistilledPageWideColumnJs(bool wide) {
 +  return "useWideColumn(" + base::ToString(wide) + ");";
 +}
 +
- const std::string GetDistilledPageFontFamilyJs(mojom::FontFamily font_family) {
-   return "useFontFamily('" + GetJsFontFamily(font_family) + "');";
+ std::string GetDistilledPageFontFamilyJs(mojom::FontFamily font_family) {
+   return base::StrCat({"useFontFamily('", GetJsFontFamily(font_family), "');"});
  }
 diff --git a/components/dom_distiller/core/viewer.h b/components/dom_distiller/core/viewer.h
-index a021918a6..f5ce1df7f 100644
+index 755e82138..98d304722 100644
 --- a/components/dom_distiller/core/viewer.h
 +++ b/components/dom_distiller/core/viewer.h
-@@ -91,6 +91,9 @@ const std::string GetDistilledPageThemeJs(mojom::Theme theme);
+@@ -92,6 +92,9 @@ std::string GetDistilledPageThemeJs(mojom::Theme theme);
  // Returns JavaScript corresponding to setting whether links are enabled.
- const std::string GetDistilledPageLinksEnabledJs(bool enabled);
+ std::string GetDistilledPageLinksEnabledJs(bool enabled);
  
 +// Returns JavaScript to set the column width of the distilled page.
-+const std::string GetDistilledPageWideColumnJs(bool wide);
++std::string GetDistilledPageWideColumnJs(bool wide);
 +
  /**
   * Generates a JavaScript snippet to apply font scaling.

@@ -40,10 +40,10 @@ index 7a52493fe..6c4ac4820 100644
            max-shortcuts-in-expanded-state="${this.maxShortcutsInExpandedState_}"
            max-most-visited-tiles-in-expanded-state="${this.maxMostVisitedTilesInExpandedState_}"
 diff --git a/chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.cc b/chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.cc
-index 06edf4b13..5597c4834 100644
+index 94af8d9d3..50bb2ef86 100644
 --- a/chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.cc
 +++ b/chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.cc
-@@ -386,6 +386,7 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
+@@ -389,6 +389,7 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
        {"linkRemoveA11y", IDS_NTP_MOST_VISITED_SITES_REMOVE},
        {"linkRemovedMsg", IDS_NTP_CONFIRM_MSG_SHORTCUT_REMOVED},
        {"shortcutMoreActions", IDS_NTP_CUSTOM_LINKS_MORE_ACTIONS},
@@ -52,10 +52,10 @@ index 06edf4b13..5597c4834 100644
        {"nameField", IDS_NTP_CUSTOM_LINKS_NAME},
        {"restoreDefaultLinks", IDS_NTP_CONFIRM_MSG_RESTORE_DEFAULTS},
 diff --git a/components/ntp_tiles/BUILD.gn b/components/ntp_tiles/BUILD.gn
-index 9aa7822fe..7a5b4da10 100644
+index 124effeea..948870e1f 100644
 --- a/components/ntp_tiles/BUILD.gn
 +++ b/components/ntp_tiles/BUILD.gn
-@@ -64,6 +64,7 @@ static_library("ntp_tiles") {
+@@ -60,6 +60,7 @@ static_library("ntp_tiles") {
      "//base",
      "//components/history/core/browser",
      "//components/ntp_tiles/webui/resources",
@@ -64,7 +64,7 @@ index 9aa7822fe..7a5b4da10 100644
    deps = [
      ":mojo_bindings",
 diff --git a/components/ntp_tiles/custom_links_manager_impl.cc b/components/ntp_tiles/custom_links_manager_impl.cc
-index 1a5ffdeb3..7087b316b 100644
+index bce188c0c..cff75a444 100644
 --- a/components/ntp_tiles/custom_links_manager_impl.cc
 +++ b/components/ntp_tiles/custom_links_manager_impl.cc
 @@ -6,6 +6,7 @@
@@ -75,7 +75,7 @@ index 1a5ffdeb3..7087b316b 100644
  #include <string>
  #include <utility>
  #include <vector>
-@@ -24,6 +25,25 @@
+@@ -26,6 +27,25 @@
  
  namespace ntp_tiles {
  
@@ -99,12 +99,12 @@ index 1a5ffdeb3..7087b316b 100644
 +}
 +
  CustomLinksManagerImpl::CustomLinksManagerImpl(const Options& options)
-     : prefs_(options.prefs),
-       max_links_(
-@@ -37,6 +57,10 @@ CustomLinksManagerImpl::CustomLinksManagerImpl(const Options& options)
-   }
-   if (IsInitialized()) {
-     current_links_ = store_.RetrieveLinks();
+     : custom_links_initialized_pref_(
+           options.scope == CustomLinksScope::kDesktop
+@@ -52,6 +72,10 @@ CustomLinksManagerImpl::CustomLinksManagerImpl(const Options& options)
+         return link.url == ai_mode_url;
+       });
+     }
 +    for (Link& link : current_links_) {
 +      link.is_most_visited = false;
 +    }
@@ -112,16 +112,16 @@ index 1a5ffdeb3..7087b316b 100644
      RemoveCustomLinksForPreinstalledApps();
    }
  
-@@ -56,7 +80,7 @@ bool CustomLinksManagerImpl::Initialize(const NTPTilesVector& tiles) {
+@@ -71,7 +95,7 @@ bool CustomLinksManagerImpl::Initialize(const NTPTilesVector& tiles) {
    }
  
    for (const NTPTile& tile : tiles) {
 -    current_links_.emplace_back(Link{tile.url, tile.title, true});
 +    current_links_.emplace_back(Link{tile.url, tile.title, false});
    }
- 
-   {
-@@ -96,8 +120,10 @@ bool CustomLinksManagerImpl::AddLinkTo(const GURL& url,
+   if (enable_ai_mode_tile_) {
+     InsertAiModeLinkIfNeeded(current_links_);
+@@ -122,8 +146,10 @@ bool CustomLinksManagerImpl::AddLinkTo(const GURL& url,
      return false;
    }
  
@@ -134,7 +134,7 @@ index 1a5ffdeb3..7087b316b 100644
      return false;
    }
  
-@@ -122,11 +148,14 @@ bool CustomLinksManagerImpl::UpdateLink(const GURL& url,
+@@ -148,11 +174,14 @@ bool CustomLinksManagerImpl::UpdateLink(const GURL& url,
      return false;
    }
  
@@ -151,7 +151,7 @@ index 1a5ffdeb3..7087b316b 100644
      return false;
    }
  
-@@ -160,6 +189,7 @@ bool CustomLinksManagerImpl::ReorderLink(const GURL& url, size_t new_pos) {
+@@ -191,6 +220,7 @@ bool CustomLinksManagerImpl::ReorderLink(const GURL& url, size_t new_pos) {
      return false;
    }
  
@@ -159,18 +159,18 @@ index 1a5ffdeb3..7087b316b 100644
    StoreLinks();
    return true;
  }
-@@ -204,6 +234,7 @@ void CustomLinksManagerImpl::ClearLinks() {
+@@ -265,6 +295,7 @@ void CustomLinksManagerImpl::ClearLinks() {
  
  void CustomLinksManagerImpl::StoreLinks() {
    base::AutoReset<bool> auto_reset(&updating_preferences_, true);
 +  RemoveDuplicateSites(current_links_);
-   store_.StoreLinks(current_links_);
- }
- 
-@@ -274,6 +305,10 @@ void CustomLinksManagerImpl::OnPreferenceChanged() {
- 
-   if (IsInitialized()) {
-     current_links_ = store_.RetrieveLinks();
+   std::vector<Link> links_to_store = current_links_;
+   GURL ai_mode_url(kAiModeTileUrl);
+   auto it = std::find_if(
+@@ -353,6 +384,10 @@ void CustomLinksManagerImpl::OnPreferenceChanged() {
+         return link.url == GURL(kAiModeTileUrl);
+       });
+     }
 +    for (Link& link : current_links_) {
 +      link.is_most_visited = false;
 +    }
@@ -296,10 +296,10 @@ index f9e10a279..c97057510 100644
      return;
    }
 diff --git a/ui/webui/resources/cr_components/most_visited/most_visited.css b/ui/webui/resources/cr_components/most_visited/most_visited.css
-index 8c83e8763..7a22eb316 100644
+index 471f45818..eb0f39244 100644
 --- a/ui/webui/resources/cr_components/most_visited/most_visited.css
 +++ b/ui/webui/resources/cr_components/most_visited/most_visited.css
-@@ -309,6 +309,83 @@ cr-icon-button {
+@@ -311,6 +311,83 @@ cr-icon-button {
    transition: opacity 100ms ease-in-out;
  }
  
@@ -384,7 +384,7 @@ index 8c83e8763..7a22eb316 100644
    left: 0;
    right: unset;
 diff --git a/ui/webui/resources/cr_components/most_visited/most_visited.html.ts b/ui/webui/resources/cr_components/most_visited/most_visited.html.ts
-index 38ec39464..d2b16635b 100644
+index beed338d7..55a8667fb 100644
 --- a/ui/webui/resources/cr_components/most_visited/most_visited.html.ts
 +++ b/ui/webui/resources/cr_components/most_visited/most_visited.html.ts
 @@ -9,6 +9,7 @@ import type {MostVisitedElement} from './most_visited.js';
@@ -476,7 +476,7 @@ index 38ec39464..d2b16635b 100644
  <cr-toast-manager id="toastManager" duration="10000">
    <cr-button id="undo" aria-label="${this.i18n('undoDescription')}"
 diff --git a/ui/webui/resources/cr_components/most_visited/most_visited.ts b/ui/webui/resources/cr_components/most_visited/most_visited.ts
-index 57fb3a263..95441260b 100644
+index 1927dfaa9..eec70fbef 100644
 --- a/ui/webui/resources/cr_components/most_visited/most_visited.ts
 +++ b/ui/webui/resources/cr_components/most_visited/most_visited.ts
 @@ -13,6 +13,7 @@ import '//resources/cr_elements/policy/cr_policy_indicator.js';
@@ -524,7 +524,7 @@ index 57fb3a263..95441260b 100644
    protected accessor isDark_: boolean = false;
    private accessor reordering_: boolean = false;
    private accessor maxTiles_: number = 0;
-@@ -521,21 +538,24 @@ export class MostVisitedElement extends MostVisitedElementBase {
+@@ -524,21 +541,24 @@ export class MostVisitedElement extends MostVisitedElementBase {
    }
  
    private computeDialogShortcutAlreadyExists_(): boolean {
@@ -555,7 +555,7 @@ index 57fb3a263..95441260b 100644
      });
    }
  
-@@ -817,6 +837,124 @@ export class MostVisitedElement extends MostVisitedElementBase {
+@@ -820,6 +840,124 @@ export class MostVisitedElement extends MostVisitedElementBase {
      this.$.dialog.showModal();
    }
  
@@ -680,7 +680,7 @@ index 57fb3a263..95441260b 100644
    protected onAddShortcutKeydown_(e: KeyboardEvent) {
      if (hasKeyModifiers(e)) {
        return;
-@@ -1047,17 +1185,34 @@ export class MostVisitedElement extends MostVisitedElementBase {
+@@ -1050,17 +1188,34 @@ export class MostVisitedElement extends MostVisitedElementBase {
      return Number(target.dataset['index']);
    }
  

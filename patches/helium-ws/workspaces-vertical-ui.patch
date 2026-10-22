@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
-index 0ff2fb622..5450acab5 100644
+index 606169899..52b10c662 100644
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -242,6 +242,7 @@
+@@ -243,6 +243,7 @@
  #include "chrome/browser/ui/views/update_recommended_message_box.h"
  #include "chrome/browser/ui/views/user_education/browser_user_education_service.h"
  #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
@@ -10,7 +10,7 @@ index 0ff2fb622..5450acab5 100644
  #include "chrome/browser/ui/waap/initial_web_ui_manager.h"
  #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
  #include "chrome/browser/ui/web_applications/app_browser_controller.h"
-@@ -1113,6 +1114,13 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
+@@ -1114,6 +1115,13 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
      horizontal_tab_strip_region_view_->InitializeTabStrip();
    }
  
@@ -24,7 +24,7 @@ index 0ff2fb622..5450acab5 100644
    if (auto* const organizer_panel_controller =
            OrganizerPanelController::From(browser_)) {
      organizer_tray_ =
-@@ -1236,6 +1244,7 @@ BrowserView::~BrowserView() {
+@@ -1244,6 +1252,7 @@ BrowserView::~BrowserView() {
    // Stop the animation timer explicitly here to avoid running it in a nested
    // message loop, which may run by Browser destructor.
    loading_animation_timer_.Stop();
@@ -32,7 +32,7 @@ index 0ff2fb622..5450acab5 100644
    zen_mode_event_monitor_.reset();
    zen_expand_on_hover_lock_.reset();
    app_menu_control_observation_.Reset();
-@@ -2049,6 +2058,16 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
+@@ -2061,6 +2070,16 @@ void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
      reveal_side = true;
    }
  
@@ -49,7 +49,7 @@ index 0ff2fb622..5450acab5 100644
    // Pinned top chrome stays visible regardless of cursor position.
    if (IsZenModeTopChromePinned()) {
      reveal_top = true;
-@@ -2223,6 +2242,45 @@ void BrowserView::AppMenuClosed() {
+@@ -2235,6 +2254,45 @@ void BrowserView::AppMenuClosed() {
    }
  }
  
@@ -95,7 +95,7 @@ index 0ff2fb622..5450acab5 100644
  bool BrowserView::IsPointInZenTopChromeBounds(const gfx::Point& point) const {
    if (!top_container_ || !top_container_->parent()) {
      return false;
-@@ -4849,9 +4907,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
+@@ -4867,9 +4925,15 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
      }
    }
  
@@ -113,7 +113,7 @@ index 0ff2fb622..5450acab5 100644
    }
  
    ExtensionKeybindingRegistryViews::From(browser_)->OnHostActivationChanged(
-@@ -6871,6 +6935,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
+@@ -6910,6 +6974,9 @@ void BrowserView::AnimationProgressed(const gfx::Animation* animation) {
  
  void BrowserView::AnimationEnded(const gfx::Animation* animation) {
    AnimationProgressed(animation);
@@ -124,10 +124,10 @@ index 0ff2fb622..5450acab5 100644
  
  WebAppFrameToolbarView* BrowserView::web_app_frame_toolbar() {
 diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
-index 9bffe730e..690360170 100644
+index 0fc1d64a6..17b7112b5 100644
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
-@@ -125,6 +125,10 @@ namespace version_info {
+@@ -129,6 +129,10 @@ namespace version_info {
  enum class Channel;
  }
  
@@ -138,7 +138,7 @@ index 9bffe730e..690360170 100644
  namespace views {
  class EventMonitor;
  class LabelButton;
-@@ -253,6 +257,12 @@ class BrowserView : public BrowserWindow,
+@@ -259,6 +263,12 @@ class BrowserView : public BrowserWindow,
      theme_background_y_offset_ = offset;
    }
  
@@ -151,7 +151,7 @@ index 9bffe730e..690360170 100644
  #if BUILDFLAG(IS_MAC)
    views::Widget* overlay_widget() { return overlay_widget_.get(); }
    const views::Widget* overlay_widget() const { return overlay_widget_.get(); }
-@@ -441,6 +451,9 @@ class BrowserView : public BrowserWindow,
+@@ -445,6 +455,9 @@ class BrowserView : public BrowserWindow,
    void ToggleZenModeSideChrome();
    void ToggleZenModeTopChrome();
  
@@ -161,7 +161,7 @@ index 9bffe730e..690360170 100644
    // Returns the widget for anchoring bubbles and dialogs.
    // This returns BrowserWidget except on fullscreen macOS where the toolbar is
    // hosted in an OverlayWidget.
-@@ -1232,6 +1245,8 @@ class BrowserView : public BrowserWindow,
+@@ -1240,6 +1253,8 @@ class BrowserView : public BrowserWindow,
    // details)
    std::optional<int> theme_background_y_offset_;
  
@@ -171,7 +171,7 @@ index 9bffe730e..690360170 100644
    raw_ptr<WebAppFrameToolbarView> web_app_frame_toolbar_ = nullptr;
  
 diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
-index 3ba0091e4..605f2a92e 100644
+index 9581154bf..2ddaf3d03 100644
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
 @@ -10,6 +10,7 @@
@@ -197,7 +197,7 @@ index 3ba0091e4..605f2a92e 100644
 +#include "chrome/browser/ui/workspaces/workspace_controller.h"
  #include "chrome/common/chrome_switches.h"
  #include "ui/base/hit_test.h"
- #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+ #include "ui/base/mojom/menu_source_type.mojom-shared.h"
  #include "ui/base/mojom/window_show_state.mojom.h"
  #include "ui/base/ui_base_features.h"
 +#include "ui/color/color_id.h"
@@ -289,18 +289,17 @@ index 3ba0091e4..605f2a92e 100644
  
    // Re-apply Widget overrides because GetColorProviderKey might have
    // overwritten them.
-@@ -506,6 +580,9 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
-   // Apply BrowserWidget overrides:
-   key.app_controller =
-       web_app::AppBrowserController::From(browser_view_->browser());
-+  if (has_workspace_theme && !key.app_controller) {
+@@ -508,6 +582,8 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
+           web_app::AppBrowserController::From(browser_view_->browser())) {
+     key.app_controller = app_controller;
+     key.app_background_color = app_controller->GetBackgroundColor();
++  } else if (has_workspace_theme) {
 +    key.app_controller = WorkspaceColorMixers::Get();
-+  }
+   }
  
  #if BUILDFLAG(IS_CHROMEOS)
-   // ChromeOS SystemWebApps use the OS theme all the time.
 diff --git a/chrome/browser/ui/views/frame/contents_web_view.cc b/chrome/browser/ui/views/frame/contents_web_view.cc
-index 8f29bb429..675be93c4 100644
+index e1d30f930..2c9af71f0 100644
 --- a/chrome/browser/ui/views/frame/contents_web_view.cc
 +++ b/chrome/browser/ui/views/frame/contents_web_view.cc
 @@ -7,13 +7,17 @@
@@ -321,7 +320,7 @@ index 8f29bb429..675be93c4 100644
  #include "third_party/blink/public/common/input/web_input_event.h"
  #include "third_party/skia/include/core/SkColor.h"
  #include "ui/base/metadata/metadata_impl_macros.h"
-@@ -156,6 +160,9 @@ void ContentsWebView::SetWebContents(content::WebContents* web_contents) {
+@@ -157,6 +161,9 @@ void ContentsWebView::SetWebContents(content::WebContents* web_contents) {
    }
  
    UpdateIsBlockedByModal();
@@ -331,7 +330,7 @@ index 8f29bb429..675be93c4 100644
  
    if (!status_bubble_) {
      status_bubble_ = std::make_unique<StatusBubbleViews>(this);
-@@ -185,7 +192,31 @@ void ContentsWebView::DidGetUserInteraction(const blink::WebInputEvent& event) {
+@@ -186,7 +193,31 @@ void ContentsWebView::DidGetUserInteraction(const blink::WebInputEvent& event) {
  }
  #endif
  
@@ -363,7 +362,7 @@ index 8f29bb429..675be93c4 100644
    const SkColor color = GetColorProvider()->GetColor(
        is_letterboxing() ? kColorWebContentsBackgroundLetterboxing
                          : kColorWebContentsBackground);
-@@ -194,19 +225,19 @@ void ContentsWebView::UpdateBackgroundColor() {
+@@ -195,19 +226,19 @@ void ContentsWebView::UpdateBackgroundColor() {
    // TODO(crbug.com/456309057): Update this to be a CHECK.
    if (SkColorGetA(color) != SK_AlphaOPAQUE) {
      base::debug::DumpWithoutCrashing();
@@ -387,7 +386,7 @@ index 8f29bb429..675be93c4 100644
  
  std::unique_ptr<ui::Layer> ContentsWebView::RecreateLayer() {
 diff --git a/chrome/browser/ui/views/frame/contents_web_view.h b/chrome/browser/ui/views/frame/contents_web_view.h
-index dba4f324e..1ee9ea5d4 100644
+index 0dc0d4b8d..61a3adbe1 100644
 --- a/chrome/browser/ui/views/frame/contents_web_view.h
 +++ b/chrome/browser/ui/views/frame/contents_web_view.h
 @@ -62,6 +62,7 @@ class ContentsWebView : public views::WebView,
@@ -440,7 +439,7 @@ index 90bb0568b..03cb1c04a 100644
  
  void MultiContentsBackgroundView::UpdateSolidLayerColor() {
 diff --git a/chrome/browser/ui/views/frame/multi_contents_view.cc b/chrome/browser/ui/views/frame/multi_contents_view.cc
-index 28dc2b0e6..f0cad96e9 100644
+index 80b85ef49..b7c33904d 100644
 --- a/chrome/browser/ui/views/frame/multi_contents_view.cc
 +++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
 @@ -34,6 +34,7 @@
@@ -451,7 +450,7 @@ index 28dc2b0e6..f0cad96e9 100644
  #include "chrome/common/pref_names.h"
  #include "chrome/common/webui_url_constants.h"
  #include "components/prefs/pref_service.h"
-@@ -580,6 +581,8 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
+@@ -581,6 +582,8 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
  
    if (IsInSplitView()) {
      available_space.Inset(split_view_insets_);
@@ -460,7 +459,7 @@ index 28dc2b0e6..f0cad96e9 100644
    } else if (should_use_rounded_frame) {
      gfx::Insets single_insets(kSplitViewContentInset);
      single_insets.set_top(attached_chrome.TopInset());
-@@ -892,6 +895,12 @@ bool MultiContentsView::ShouldUseRoundedFrame() const {
+@@ -893,6 +896,12 @@ bool MultiContentsView::ShouldUseRoundedFrame() const {
           !is_fullscreen;
  }
  
@@ -474,7 +473,7 @@ index 28dc2b0e6..f0cad96e9 100644
    return top_edge_attached_to_infobar_ ||
           IsTopChromeAttached(*browser_view_,
 diff --git a/chrome/browser/ui/views/frame/multi_contents_view.h b/chrome/browser/ui/views/frame/multi_contents_view.h
-index b15c4d6b8..e3ff4c0b1 100644
+index 23b42c043..2db9f63cc 100644
 --- a/chrome/browser/ui/views/frame/multi_contents_view.h
 +++ b/chrome/browser/ui/views/frame/multi_contents_view.h
 @@ -63,6 +63,9 @@ class MultiContentsView
@@ -526,10 +525,10 @@ index 7651017ff..3aaebf096 100644
  }
  
 diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
-index 5eca03bcd..49f719834 100644
+index 3e145fe26..108853381 100644
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
 +++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
-@@ -117,6 +117,12 @@ class VerticalTabStripRegionView final
+@@ -126,6 +126,12 @@ class VerticalTabStripRegionView final
    std::unique_ptr<ExpandOnHoverLock> GetExpandOnHoverLock(
        ExpandOnHoverLockType lock_type) override;
  
@@ -543,10 +542,10 @@ index 5eca03bcd..49f719834 100644
    void HandleDragUpdate(
        const std::optional<BrowserRootView::DropIndex>& index) override;
 diff --git a/chrome/browser/ui/views/side_panel/side_panel.cc b/chrome/browser/ui/views/side_panel/side_panel.cc
-index 25dd2d748..33129843b 100644
+index 4585f1956..660fb7160 100644
 --- a/chrome/browser/ui/views/side_panel/side_panel.cc
 +++ b/chrome/browser/ui/views/side_panel/side_panel.cc
-@@ -744,6 +744,7 @@ void SidePanel::UpdateVisibility(bool should_be_open, bool animate_transition) {
+@@ -723,6 +723,7 @@ void SidePanel::UpdateVisibility(bool should_be_open, bool animate_transition) {
      animation_controller->Clear(kAnimationGroup);
      SetVisible(should_be_open);
    }
@@ -555,7 +554,7 @@ index 25dd2d748..33129843b 100644
  
  double SidePanel::GetAnimationValueFor(BrowserAnimationSequence which) const {
 diff --git a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
-index 4c5368623..2d8bc7cb1 100644
+index 365ebd7f6..f2db756da 100644
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 @@ -4,10 +4,16 @@
@@ -1022,7 +1021,7 @@ index 4c5368623..2d8bc7cb1 100644
      if (!should_show_child) {
        layouts.child_layouts.emplace_back(child, false, gfx::Rect());
        continue;
-@@ -473,13 +789,101 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
+@@ -469,13 +785,101 @@ views::ProposedLayout PinnedTabContainerView::CalculateVerticalLayout(
      layouts.child_layouts.emplace_back(child, true, bounds);
    }
  
@@ -1268,7 +1267,7 @@ index 9bf90c27d..96e7f76e4 100644
    void ResetCollectionNode();
    void OnDataChanged();
 diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
-index e48e2d5bd..16323502d 100644
+index 54f967e76..a55f4cacc 100644
 --- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
 @@ -228,6 +228,14 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
@@ -1284,17 +1283,17 @@ index e48e2d5bd..16323502d 100644
 +  }
 +
    SetNotifyEnterExitOnChild(true);
-   UpdateColors();
  }
-@@ -239,6 +247,7 @@ TabStripView::~TabStripView() {
+ 
+@@ -238,6 +246,7 @@ TabStripView::~TabStripView() {
  }
  
  void TabStripView::AddedToWidget() {
 +  UpdateWorkspaceVisibility();
    views::Widget* const widget = GetWidget();
-   paint_as_active_subscription_ = widget->RegisterPaintAsActiveChangedCallback(
-       base::BindRepeating(&TabStripView::UpdateColors, base::Unretained(this)));
-@@ -327,6 +336,7 @@ void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
+   widget_observation_.Observe(widget);
+ }
+@@ -324,6 +333,7 @@ void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
  }
  
  void TabStripView::OnTabChanged(const tabs::TabInterface* active_tab) {
@@ -1302,7 +1301,7 @@ index e48e2d5bd..16323502d 100644
    if (!collection_node_ || !active_tab) {
      return;
    }
-@@ -611,6 +621,7 @@ void TabStripView::SetScrollViewProperties(views::ScrollView* scroll_view) {
+@@ -608,6 +618,7 @@ void TabStripView::SetScrollViewProperties(views::ScrollView* scroll_view) {
  }
  
  void TabStripView::ResetCollectionNode() {
@@ -1310,7 +1309,7 @@ index e48e2d5bd..16323502d 100644
    collection_node_ = nullptr;
    if (tab_scroll_button_container_) {
      tab_scroll_button_container_->SetScrollView(nullptr);
-@@ -798,6 +809,43 @@ gfx::Rect TabStripView::GetBoundsInScrollViewContents(
+@@ -795,6 +806,43 @@ gfx::Rect TabStripView::GetBoundsInScrollViewContents(
    return bounds;
  }
  
@@ -1351,11 +1350,11 @@ index e48e2d5bd..16323502d 100644
 +  InvalidateLayout();
 +}
 +
- void TabStripView::UpdateColors() {}
- 
- bool TabStripView::IsFrameActive() const {
+ void TabStripView::HideHoverCardOnScroll() {
+   if (!collection_node_) {
+     return;
 diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.h b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
-index 1767160a0..6680ca19b 100644
+index 69194f20b..5ce25851d 100644
 --- a/chrome/browser/ui/views/tabs/common/tab_strip_view.h
 +++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
 @@ -7,6 +7,7 @@
@@ -1388,13 +1387,13 @@ index 1767160a0..6680ca19b 100644
 @@ -130,6 +134,7 @@ class TabStripView final : public views::View,
                                            views::ScrollView* scroll_view);
  
-   void UpdateColors();
+   void HideHoverCardOnScroll();
 +  void UpdateWorkspaceVisibility();
  
-   bool IsFrameActive() const;
+   PrefService* GetPrefs() const;
  
-@@ -171,6 +176,10 @@ class TabStripView final : public views::View,
-   base::CallbackListSubscription paint_as_active_subscription_;
+@@ -166,6 +171,10 @@ class TabStripView final : public views::View,
+   base::CallbackListSubscription node_destroyed_subscription_;
    std::vector<base::CallbackListSubscription> callback_subscriptions_;
  
 +  base::ScopedObservation<workspaces::WorkspaceController,
@@ -1405,7 +1404,7 @@ index 1767160a0..6680ca19b 100644
        widget_observation_{this};
  };
 diff --git a/chrome/browser/ui/views/tabs/common/tab_view.cc b/chrome/browser/ui/views/tabs/common/tab_view.cc
-index bff34ed0c..7e18a13b9 100644
+index 24abdbfb7..02263405d 100644
 --- a/chrome/browser/ui/views/tabs/common/tab_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_view.cc
 @@ -56,6 +56,7 @@
@@ -1416,7 +1415,7 @@ index bff34ed0c..7e18a13b9 100644
  #include "chrome/common/buildflags.h"
  #include "chrome/grit/generated_resources.h"
  #include "chrome/grit/theme_resources.h"
-@@ -1085,7 +1086,7 @@ void TabView::OnTabStateChanged() {
+@@ -1119,7 +1120,7 @@ void TabView::OnTabStateChanged() {
  
    active_ = tab_strip_model->IsTabInForeground(index);
    split_ = tab->IsSplit();
@@ -1425,7 +1424,7 @@ index bff34ed0c..7e18a13b9 100644
  
    SetSelection(tab->IsSelected());
    UpdateTabData(tab_data_observer_->tab_data());
-@@ -1097,6 +1098,13 @@ void TabView::OnTabStateChanged() {
+@@ -1131,6 +1132,13 @@ void TabView::OnTabStateChanged() {
    InvalidateLayout();
  }
  
@@ -1454,10 +1453,10 @@ index 7e7c326cd..d76c6a0eb 100644
    GlowHoverController* GetHoverControllerForTesting() {
      return hover_controller_.get();
 diff --git a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
-index 5dd9f7ef1..f45e8fc20 100644
+index 366f3e39e..3e782586f 100644
 --- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
-@@ -336,7 +336,7 @@ gfx::Size UnpinnedTabContainerViewLayout::CalculateVerticalMinimumSize(
+@@ -355,7 +355,7 @@ gfx::Size UnpinnedTabContainerViewLayout::CalculateVerticalMinimumSize(
    int num_children = 0;
    for (const auto* child :
         tab_container_view->collection_node_->GetDirectChildren()) {
@@ -4762,10 +4761,10 @@ index 000000000..5448bb06e
 +
 +#endif
 diff --git a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc
-index c20742813..2375f22e3 100644
+index da3472456..1e8dd7b77 100644
 --- a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc
 +++ b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.cc
-@@ -454,6 +454,7 @@ NewTabPageHandler::NewTabPageHandler(
+@@ -438,6 +438,7 @@ NewTabPageHandler::NewTabPageHandler(
      const std::vector<ntp::ModuleIdDetail>* module_id_details)
      : SettingsEnabledObserver(
            optimization_guide::UserVisibleFeatureKey::kWallpaperSearch),
@@ -4773,7 +4772,7 @@ index c20742813..2375f22e3 100644
        logger_(profile,
                chrome::ChromeUINewTabPageURLAsGURL(),
                ntp_navigation_start_time_ticks),
-@@ -1153,6 +1154,10 @@ void NewTabPageHandler::OnThemeChanged() {
+@@ -1129,6 +1130,10 @@ void NewTabPageHandler::OnThemeChanged() {
                              web_contents_));
  }
  
@@ -4785,7 +4784,7 @@ index c20742813..2375f22e3 100644
    OnThemeChanged();
  }
 diff --git a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h
-index af7123d31..901867874 100644
+index 07503b9f2..ca8df3956 100644
 --- a/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h
 +++ b/chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h
 @@ -81,7 +81,8 @@ class NewTabPageHandler
@@ -4798,7 +4797,7 @@ index af7123d31..901867874 100644
   public:
    NewTabPageHandler(mojo::PendingReceiver<new_tab_page::mojom::PageHandler>
                          pending_page_handler,
-@@ -173,6 +174,11 @@ class NewTabPageHandler
+@@ -171,6 +172,11 @@ class NewTabPageHandler
    // ThemeServiceObserver:
    void OnThemeChanged() override;
  
@@ -4811,10 +4810,10 @@ index af7123d31..901867874 100644
    void OnCustomBackgroundImageUpdated() override;
  
 diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
-index 8c01e0ab6..aa66d531e 100644
+index 0bad35076..638c773e1 100644
 --- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
 +++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.cc
-@@ -764,6 +764,15 @@ void DesktopWindowTreeHostPlatform::ClearNativeFocus() {
+@@ -766,6 +766,15 @@ void DesktopWindowTreeHostPlatform::ClearNativeFocus() {
    }
  }
  
@@ -4831,7 +4830,7 @@ index 8c01e0ab6..aa66d531e 100644
    return platform_window()->IsClientControlledWindowMovementSupported();
  }
 diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h
-index 1a9a021ec..087d72404 100644
+index 3e889dc42..9484709b7 100644
 --- a/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h
 +++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h
 @@ -115,6 +115,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform

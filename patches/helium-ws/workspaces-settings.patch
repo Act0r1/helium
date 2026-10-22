@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/resources/settings/BUILD.gn b/chrome/browser/resources/settings/BUILD.gn
-index a998b4dd0..a2ea531ad 100644
+index 2cc2f06f9..1f94b755c 100644
 --- a/chrome/browser/resources/settings/BUILD.gn
 +++ b/chrome/browser/resources/settings/BUILD.gn
-@@ -424,6 +424,9 @@ build_webui("build") {
+@@ -467,6 +467,9 @@ build_webui("build") {
      "time.ts",
      "tooltip_mixin.ts",
      "tooltip_mixin_lit.ts",
@@ -12,9 +12,9 @@ index a998b4dd0..a2ea531ad 100644
    ]
  
    if (is_chromeos) {
-@@ -597,6 +600,7 @@ build_webui("build") {
-     "site_settings/clear_storage_dialog_shared.css",
+@@ -679,6 +682,7 @@ build_webui("build") {
      "site_settings/site_settings_shared.css",
+     "site_settings/site_settings_shared_lit.css",
      "system_page/system_page.css",
 +    "workspaces_page/workspaces_page.css",
    ]
@@ -41,10 +41,10 @@ index feff9bdf6..5fd343034 100644
    };
    // </if>
 diff --git a/chrome/browser/resources/settings/route.ts b/chrome/browser/resources/settings/route.ts
-index a3a645bc4..9c3ff5eef 100644
+index bfdfd1e76..e3d259055 100644
 --- a/chrome/browser/resources/settings/route.ts
 +++ b/chrome/browser/resources/settings/route.ts
-@@ -216,6 +216,12 @@ function createRoutes(): SettingsRoutes {
+@@ -219,6 +219,12 @@ function createRoutes(): SettingsRoutes {
      r.FONTS = r.APPEARANCE.createChild('/fonts');
    }
  
@@ -58,10 +58,10 @@ index a3a645bc4..9c3ff5eef 100644
      r.PRIVACY = r.BASIC.createSection(
          '/privacy', 'privacy', loadTimeData.getString('privacyPageTitle'));
 diff --git a/chrome/browser/resources/settings/router.ts b/chrome/browser/resources/settings/router.ts
-index fd42a8eda..f33b49bec 100644
+index a3e09d615..0c6380ca0 100644
 --- a/chrome/browser/resources/settings/router.ts
 +++ b/chrome/browser/resources/settings/router.ts
-@@ -123,6 +123,7 @@ export interface SettingsRoutes {
+@@ -124,6 +124,7 @@ export interface SettingsRoutes {
    SYSTEM: Route;
    TRAVEL: Route;
    TRIGGERED_RESET_DIALOG: Route;
@@ -70,10 +70,10 @@ index fd42a8eda..f33b49bec 100644
    GOOGLE_SERVICES: Route;
  
 diff --git a/chrome/browser/resources/settings/settings_main/settings_main.html b/chrome/browser/resources/settings/settings_main/settings_main.html
-index 064fba2be..aea65f7f9 100644
+index 9aaa81650..86150501c 100644
 --- a/chrome/browser/resources/settings/settings_main/settings_main.html
 +++ b/chrome/browser/resources/settings/settings_main/settings_main.html
-@@ -112,6 +112,15 @@
+@@ -111,6 +111,15 @@
      </div>
    </template>
  
@@ -90,7 +90,7 @@ index 064fba2be..aea65f7f9 100644
      <template is="dom-if" if="[[renderPlugin_(
          routes_.SEARCH, lastRoute_, inSearchMode_)]]">
 diff --git a/chrome/browser/resources/settings/settings_main/settings_main.ts b/chrome/browser/resources/settings/settings_main/settings_main.ts
-index d9fd6ab2a..ba02e6ee9 100644
+index 4b6a86f0d..d24b98fa3 100644
 --- a/chrome/browser/resources/settings/settings_main/settings_main.ts
 +++ b/chrome/browser/resources/settings/settings_main/settings_main.ts
 @@ -20,6 +20,7 @@ import '../performance_page/performance_page_index.js';
@@ -102,18 +102,18 @@ index d9fd6ab2a..ba02e6ee9 100644
  import '../default_browser_page/default_browser_page.js';
  
 diff --git a/chrome/browser/resources/settings/settings_menu/settings_menu.html b/chrome/browser/resources/settings/settings_menu/settings_menu.html
-index 06df70c6f..b69d3b650 100644
+index f18c9894a..fde972822 100644
 --- a/chrome/browser/resources/settings/settings_menu/settings_menu.html
 +++ b/chrome/browser/resources/settings/settings_menu/settings_menu.html
-@@ -94,6 +94,13 @@
-           $i18n{appearanceBehaviorPageTitle}
+@@ -105,6 +105,13 @@
+           <span class="menu-label">$i18n{appearanceBehaviorPageTitle}</span>
            <cr-ripple></cr-ripple>
          </a>
 +        <a role="menuitem" id="workspaces" href="/workspaces"
 +            hidden="[[!pageVisibility_.workspaces]]"
 +            class="cr-nav-menu-item">
 +          <cr-icon icon="settings20:dashboard"></cr-icon>
-+          $i18n{workspacesPageTitle}
++          <span class="menu-label">$i18n{workspacesPageTitle}</span>
 +          <cr-ripple></cr-ripple>
 +        </a>
          <a role="menuitem" id="privacy" href="/privacy"
@@ -668,7 +668,7 @@ index 000000000..82bf9ff4b
 +customElements.define(
 +    SettingsWorkspacesPageElement.is, SettingsWorkspacesPageElement);
 diff --git a/chrome/browser/ui/webui/settings/BUILD.gn b/chrome/browser/ui/webui/settings/BUILD.gn
-index 2756796ab..ecdbfc757 100644
+index 48fb064ca..41d587843 100644
 --- a/chrome/browser/ui/webui/settings/BUILD.gn
 +++ b/chrome/browser/ui/webui/settings/BUILD.gn
 @@ -39,6 +39,7 @@ source_set("settings") {
@@ -688,10 +688,10 @@ index 2756796ab..ecdbfc757 100644
      "people_handler.cc",
      "performance_handler.cc",
 diff --git a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-index 1b77e4c92..9135ec27f 100644
+index 224768cb6..59e1cfc4b 100644
 --- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 +++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-@@ -1571,6 +1571,36 @@ void AddLanguagesStrings(content::WebUIDataSource* html_source,
+@@ -1588,6 +1588,36 @@ void AddLanguagesStrings(content::WebUIDataSource* html_source,
  #endif  // BUILDFLAG(IS_CHROMEOS)
  }
  
@@ -728,7 +728,7 @@ index 1b77e4c92..9135ec27f 100644
  void AddOnStartupStrings(content::WebUIDataSource* html_source) {
    static constexpr webui::LocalizedString kLocalizedStrings[] = {
        {"onStartup", IDS_SETTINGS_ON_STARTUP},
-@@ -4733,6 +4763,7 @@ void AddLocalizedStrings(content::WebUIDataSource* html_source,
+@@ -4792,6 +4822,7 @@ void AddLocalizedStrings(content::WebUIDataSource* html_source,
    AddPerformanceStrings(html_source);
    AddLanguagesStrings(html_source, profile);
    AddOnStartupStrings(html_source);
@@ -737,10 +737,10 @@ index 1b77e4c92..9135ec27f 100644
    AddPrivacySandboxStrings(html_source, profile);
    AddPrivacyGuideStrings(html_source, profile);
 diff --git a/chrome/browser/ui/webui/settings/settings_ui.cc b/chrome/browser/ui/webui/settings/settings_ui.cc
-index 8d856130a..bcf2594c7 100644
+index 13c13747a..4a80ad7da 100644
 --- a/chrome/browser/ui/webui/settings/settings_ui.cc
 +++ b/chrome/browser/ui/webui/settings/settings_ui.cc
-@@ -78,6 +78,7 @@
+@@ -76,6 +76,7 @@
  #include "chrome/browser/ui/webui/settings/metrics_reporting_handler.h"
  #include "chrome/browser/ui/webui/settings/omnibox_everywhere_settings_handler.h"
  #include "chrome/browser/ui/webui/settings/on_startup_handler.h"
@@ -748,7 +748,7 @@ index 8d856130a..bcf2594c7 100644
  #include "chrome/browser/ui/webui/settings/password_manager_handler.h"
  #include "chrome/browser/ui/webui/settings/people_handler.h"
  #include "chrome/browser/ui/webui/settings/performance_handler.h"
-@@ -284,6 +285,7 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
+@@ -281,6 +282,7 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
    AddSettingsPageUIHandler(std::make_unique<OnDeviceAiSettingsHandler>());
  #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
    AddSettingsPageUIHandler(std::make_unique<OnStartupHandler>(profile));

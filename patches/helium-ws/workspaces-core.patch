@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/sessions/session_restore.cc b/chrome/browser/sessions/session_restore.cc
-index dba1f49f0..f5d9593b7 100644
+index 64b19f764..5132df39b 100644
 --- a/chrome/browser/sessions/session_restore.cc
 +++ b/chrome/browser/sessions/session_restore.cc
-@@ -84,6 +84,7 @@
+@@ -85,6 +85,7 @@
  #include "chrome/browser/ui/webui/whats_new/whats_new_util.h"
  #include "chrome/browser/ui/webui_browser/webui_browser.h"
  #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
@@ -10,7 +10,7 @@ index dba1f49f0..f5d9593b7 100644
  #include "chrome/browser/web_applications/web_app_provider.h"
  #include "chrome/common/chrome_features.h"
  #include "chrome/common/extensions/extension_metrics.h"
-@@ -830,6 +831,14 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
+@@ -834,6 +835,14 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
            ShouldRestoreToExistingBrowser()) {
          // The first set of tabs is added to the existing browser.
          browser = browser_;
@@ -25,7 +25,7 @@ index dba1f49f0..f5d9593b7 100644
        } else {
  #if BUILDFLAG(IS_CHROMEOS)
          ash::BootTimesRecorder::Get()->AddLoginTimeMarker(
-@@ -1334,6 +1343,11 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
+@@ -1368,6 +1377,11 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
        }
      }
  
@@ -123,13 +123,13 @@ index 92d191c30..a4fd7cc36 100644
  };
  
 diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
-index d3181174b..fb1727fe9 100644
+index 2f361407a..8a3a71e15 100644
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -1513,6 +1513,16 @@ static_library("ui") {
+@@ -2296,6 +2296,16 @@ static_library("ui") {
    } else {
      # !is_android
-     sources += [
+     sources = [
 +      "views/workspaces/workspace_background.cc",
 +      "views/workspaces/workspace_background.h",
 +      "views/workspaces/workspace_switcher_view.cc",
@@ -143,7 +143,7 @@ index d3181174b..fb1727fe9 100644
        # This file physically lives in //chrome/browser but is compiled here so
        # that //chrome/browser:browser has no remaining sources. It registers
        # WebUI interface binders for desktop, which need this target's headers.
-@@ -3426,6 +3436,7 @@ static_library("ui") {
+@@ -4302,6 +4312,7 @@ static_library("ui") {
        # - c/b/ui/views/frame/browser_view.h
        # - c/b/ui/views/frame/themed_background.h
        # - c/b/ui/views/frame/vertical_tab_strip_region_view.h
@@ -151,17 +151,18 @@ index d3181174b..fb1727fe9 100644
        "//chrome/browser/ui/views/tabs/common:impl",
  
        # TODO(crbug.com/353332589): Remove this circular dependency when the
-@@ -4343,13 +4354,22 @@ source_set("unit_tests") {
-       "browser_unittest.cc",
+@@ -5385,6 +5396,7 @@ source_set("unit_tests") {
        "browser_window_state_unittest.cc",
        "intent_picker_tab_helper_unittest.cc",
+       "managed_ui_for_supervised_user_unittest.cc",
 +      "workspaces/workspace_controller_unittest.cc",
      ]
      deps += [
        ":accelerator_table",
-       ":browser_window_state",
+@@ -5395,7 +5407,15 @@ source_set("unit_tests") {
        "//chrome/browser/apps/intent_helper:intent_chip_display_prefs",
        "//chrome/browser/apps/link_capturing:test_support",
+       "//chrome/browser/supervised_user",
 +      "//chrome/browser/ui/tabs",
 +      "//chrome/browser/ui/tabs:tab_group",
 +      "//chrome/browser/ui/tabs:tab_strip",
@@ -171,14 +172,14 @@ index d3181174b..fb1727fe9 100644
 +      "//content/public/browser",
 +      "//ui/base",
 +      "//url",
+       "//components/supervised_user/core/browser:test_support",
      ]
-   }
- 
+     if (is_chromeos) {
 diff --git a/chrome/browser/ui/browser_live_tab_context.cc b/chrome/browser/ui/browser_live_tab_context.cc
-index de584514f..6ae002733 100644
+index 09ec69bcd..71c7b48f4 100644
 --- a/chrome/browser/ui/browser_live_tab_context.cc
 +++ b/chrome/browser/ui/browser_live_tab_context.cc
-@@ -36,6 +36,7 @@
+@@ -37,6 +37,7 @@
  #include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
  #include "chrome/browser/ui/ui_features.h"
  #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
@@ -186,7 +187,7 @@ index de584514f..6ae002733 100644
  #include "chrome/browser/web_applications/web_app_helpers.h"
  #include "components/saved_tab_groups/public/features.h"
  #include "components/saved_tab_groups/public/saved_tab_group.h"
-@@ -178,6 +179,13 @@ std::map<std::string, std::string> BrowserLiveTabContext::GetExtraDataForTab(
+@@ -206,6 +207,13 @@ std::map<std::string, std::string> BrowserLiveTabContext::GetExtraDataForTab(
  
    glic::PopulateGlicExtraData(tab_strip_model_->GetTabAtIndex(index),
                                &extra_data);
@@ -272,7 +273,7 @@ index e4bd28dec..f206f5a39 100644
      const tabs::TabInterface* tab_interface,
      CloseTabSource source,
 diff --git a/chrome/browser/ui/browser_tab_strip_model_delegate.h b/chrome/browser/ui/browser_tab_strip_model_delegate.h
-index 36c725ea3..f7db3531f 100644
+index e10456678..9c10c90bc 100644
 --- a/chrome/browser/ui/browser_tab_strip_model_delegate.h
 +++ b/chrome/browser/ui/browser_tab_strip_model_delegate.h
 @@ -93,6 +93,15 @@ class BrowserTabStripModelDelegate : public TabStripModelDelegate {
@@ -361,10 +362,10 @@ index da6abaf41..1d4caebd1 100644
  
  #endif  // CHROME_BROWSER_UI_BROWSER_TABRESTORE_H_
 diff --git a/chrome/browser/ui/browser_window/internal/browser_window_features.cc b/chrome/browser/ui/browser_window/internal/browser_window_features.cc
-index 4af9c3bcc..242e02b99 100644
+index 9c09ab68e..af8882a9f 100644
 --- a/chrome/browser/ui/browser_window/internal/browser_window_features.cc
 +++ b/chrome/browser/ui/browser_window/internal/browser_window_features.cc
-@@ -175,6 +175,7 @@
+@@ -177,6 +177,7 @@
  #include "chrome/browser/ui/webui_browser/zoom_bubble_manager_webui_browser.h"
  #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
  #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
@@ -372,19 +373,20 @@ index 4af9c3bcc..242e02b99 100644
  #include "chrome/browser/ui/zoom/browser_window_zoom_observer.h"
  #include "chrome/common/chrome_features.h"
  #include "chrome/common/pref_names.h"
-@@ -658,6 +659,12 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
-                 SessionServiceFactory::GetForProfile(browser_->GetProfile()),
+@@ -661,6 +662,13 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
                  browser_->GetSessionID(), restored_state_collapsed,
                  restored_state_uncollapsed_width);
-+
-+    if (profile->IsRegularProfile() && tab_strip_model_->SupportsTabGroups()) {
+ 
++    if (profile->IsRegularProfile() &&
++        browser->GetTabStripModel()->SupportsTabGroups()) {
 +      workspace_controller_ =
 +          GetUserDataFactory().CreateInstance<workspaces::WorkspaceController>(
 +              *browser, browser);
 +    }
-   }
- 
-   // Constructed last, out of alphabetical order:
++
+     // This relies on the vertical tab strip state controller.
+     if (organizer_panel::IsOrganizerPanelFeatureEnabled()) {
+       organizer_panel_controller_ =
 diff --git a/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc b/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
 index 3b394efe9..db6ad5225 100644
 --- a/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
@@ -398,11 +400,11 @@ index 3b394efe9..db6ad5225 100644
    clone.display_id = display_id;
  #endif
 diff --git a/chrome/browser/ui/browser_window/public/browser_window_features.h b/chrome/browser/ui/browser_window/public/browser_window_features.h
-index 97994752f..c75a36213 100644
+index 206cf9cce..38535c295 100644
 --- a/chrome/browser/ui/browser_window/public/browser_window_features.h
 +++ b/chrome/browser/ui/browser_window/public/browser_window_features.h
-@@ -265,6 +265,10 @@ namespace ttc {
- class AiOverlayDialogController;
+@@ -264,6 +264,10 @@ class AiOverlayDialogController;
+ class EntrypointController;
  }  // namespace ttc
  
 +namespace workspaces {
@@ -412,7 +414,7 @@ index 97994752f..c75a36213 100644
  namespace web_app {
  class AppBrowserController;
  }  // namespace web_app
-@@ -501,6 +505,8 @@ class BrowserWindowFeatures {
+@@ -473,6 +477,8 @@ class BrowserWindowFeatures {
    std::unique_ptr<tabs::VerticalTabStripStateController>
        vertical_tab_strip_state_controller_;
  
@@ -436,10 +438,10 @@ index 6ecba965f..d3dad081c 100644
    // If set, the browser should be created on the display given by
    // `display_id`.
 diff --git a/chrome/browser/ui/tabs/tab_menu_model.cc b/chrome/browser/ui/tabs/tab_menu_model.cc
-index 8ea664d6e..7e2e371aa 100644
+index e8b1e3cc8..be5e48cce 100644
 --- a/chrome/browser/ui/tabs/tab_menu_model.cc
 +++ b/chrome/browser/ui/tabs/tab_menu_model.cc
-@@ -522,6 +522,25 @@ void TabMenuModel::Build(int index) {
+@@ -530,6 +530,25 @@ void TabMenuModel::Build(int index) {
              ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize));
    }
  
@@ -466,10 +468,10 @@ index 8ea664d6e..7e2e371aa 100644
    AddItem(TabStripModel::CommandToggleTabMuted,
            l10n_util::GetPluralStringFUTF16(
 diff --git a/chrome/browser/ui/tabs/tab_strip_model.cc b/chrome/browser/ui/tabs/tab_strip_model.cc
-index b7677a9f5..e5dbfee72 100644
+index aa70851fd..04e6b65d1 100644
 --- a/chrome/browser/ui/tabs/tab_strip_model.cc
 +++ b/chrome/browser/ui/tabs/tab_strip_model.cc
-@@ -1677,12 +1677,18 @@ void TabStripModel::ExtendSelectionTo(int index) {
+@@ -1584,12 +1584,18 @@ void TabStripModel::ExtendSelectionTo(int index) {
      tabs_to_select = anchor_index < index ? GetTabRange(anchor, tab)
                                            : GetTabRange(tab, anchor);
  
@@ -488,7 +490,7 @@ index b7677a9f5..e5dbfee72 100644
  
      new_model.AppendTabsToSelection(
          {tabs_to_append.begin(), tabs_to_append.end()});
-@@ -2012,6 +2018,16 @@ void TabStripModel::SelectPreviousTab(TabStripUserGestureDetails detail) {
+@@ -1919,6 +1925,16 @@ void TabStripModel::SelectPreviousTab(TabStripUserGestureDetails detail) {
    SelectRelativeTabCycle(TabRelativeDirection::kPrevious, detail);
  }
  
@@ -505,7 +507,7 @@ index b7677a9f5..e5dbfee72 100644
  void TabStripModel::SelectLastTab(TabStripUserGestureDetails detail) {
    if (!empty()) {
      ActivateTab(*rbegin(), detail);
-@@ -2778,6 +2794,13 @@ bool TabStripModel::IsContextMenuCommandEnabled(
+@@ -2869,6 +2885,13 @@ bool TabStripModel::IsContextMenuCommandEnabled(
  
      case CommandToggleVertical:
        return true;
@@ -519,7 +521,7 @@ index b7677a9f5..e5dbfee72 100644
    }
    SCOPED_CRASH_KEY_NUMBER("TabStripModel", "command_id", command_id);
    NOTREACHED() << "Unsupported command: " << command_id;
-@@ -2995,6 +3018,21 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
+@@ -3080,6 +3103,21 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
        break;
      }
  
@@ -541,31 +543,23 @@ index b7677a9f5..e5dbfee72 100644
      case CommandToggleTabMuted: {
        const bool mute = WillContextMenuMuteTabs(context_index);
        for (int index : GetIndicesForCommand(context_index)) {
-@@ -3658,8 +3696,9 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
-          ++it, ++current_index) {
-       tabs::TabInterface* tab = *it;
+@@ -3792,6 +3830,7 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
        std::optional<tab_groups::TabGroupId> current_group = tab->GetGroup();
--      if (!current_group.has_value() ||
--          (!IsGroupCollapsed(current_group.value()))) {
-+      if ((!current_group.has_value() ||
-+           (!IsGroupCollapsed(current_group.value()))) &&
-+          !delegate_->IsTabHiddenByWorkspace(tab)) {
+       if ((!current_group.has_value() ||
+            (!IsGroupCollapsed(current_group.value()))) &&
++          !delegate_->IsTabHiddenByWorkspace(tab) &&
+           is_eligible(current_index)) {
          return current_index;
        }
-     }
-@@ -3672,8 +3711,9 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
-          ++it, --current_index) {
-       tabs::TabInterface* tab = *it;
+@@ -3807,6 +3846,7 @@ std::optional<int> TabStripModel::GetNextExpandedActiveTab(
        std::optional<tab_groups::TabGroupId> current_group = tab->GetGroup();
--      if (!current_group.has_value() ||
--          (!IsGroupCollapsed(current_group.value()))) {
-+      if ((!current_group.has_value() ||
-+           (!IsGroupCollapsed(current_group.value()))) &&
-+          !delegate_->IsTabHiddenByWorkspace(tab)) {
+       if ((!current_group.has_value() ||
+            (!IsGroupCollapsed(current_group.value()))) &&
++          !delegate_->IsTabHiddenByWorkspace(tab) &&
+           is_eligible(current_index)) {
          return current_index;
        }
-     }
-@@ -3842,6 +3882,9 @@ std::vector<int> TabStripModel::GetIndicesClosedByCommand(
+@@ -3979,6 +4019,9 @@ std::vector<int> TabStripModel::GetIndicesClosedByCommand(
      if (focused_group.has_value() && GetTabGroupForTab(i) != focused_group) {
        continue;
      }
@@ -575,7 +569,7 @@ index b7677a9f5..e5dbfee72 100644
      if (!indices_to_exclude.Contains(gfx::Range(i, i + 1)) && !IsTabPinned(i) &&
          (!is_selected || !IsTabSelected(i))) {
        indices.push_back(i);
-@@ -3880,6 +3923,10 @@ std::vector<tabs::TabInterface*> TabStripModel::GetTabsClosedByCommand(
+@@ -4017,6 +4060,10 @@ std::vector<tabs::TabInterface*> TabStripModel::GetTabsClosedByCommand(
        continue;
      }
  
@@ -586,7 +580,7 @@ index b7677a9f5..e5dbfee72 100644
      if (tab == invoked_tab || tab->IsPinned()) {
        if (id == CommandCloseTabsToLeft && tab == invoked_tab) {
          break;
-@@ -4375,20 +4422,26 @@ TabStripSelectionChange TabStripModel::SetSelection(
+@@ -4507,20 +4554,26 @@ TabStripSelectionChange TabStripModel::SetSelection(
  }
  
  void TabStripModel::SelectRelativeTabCycle(TabRelativeDirection direction,
@@ -617,7 +611,7 @@ index b7677a9f5..e5dbfee72 100644
      BrowserWindowInterface* browser =
          GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
            GetWebContentsAt(0));
-@@ -4396,8 +4449,19 @@ void TabStripModel::SelectMRUTab(TabRelativeDirection direction,
+@@ -4528,8 +4581,19 @@ void TabStripModel::SelectMRUTab(TabRelativeDirection direction,
        return;
      }
  
@@ -639,7 +633,7 @@ index b7677a9f5..e5dbfee72 100644
      }
  
      std::sort(mru_cycle_list_.begin(), mru_cycle_list_.end(),
-@@ -4428,7 +4492,57 @@ void TabStripModel::StopMRUCycling() {
+@@ -4560,7 +4624,57 @@ void TabStripModel::StopMRUCycling() {
  }
  
  void TabStripModel::SelectRelativeTab(TabRelativeDirection direction,
@@ -698,46 +692,22 @@ index b7677a9f5..e5dbfee72 100644
    // This may happen during automated testing or if a user somehow buffers
    // many key accelerators.
    if (empty()) {
-@@ -6007,11 +6121,15 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
-   }
+@@ -6119,7 +6233,9 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
+     };
  
-   gfx::Range block_tabs = gfx::Range(start_index, start_index + block_size);
-+  const auto IsTabUnavailable = [this](int index) {
-+    return IsTabCollapsed(index) ||
-+           delegate_->IsTabHiddenByWorkspace(GetTabAtIndex(index));
-+  };
+     auto is_eligible = [this, &is_valid_for_focus](int index) {
+-      return !IsTabCollapsed(index) && is_valid_for_focus(index);
++      return !IsTabCollapsed(index) &&
++             !delegate_->IsTabHiddenByWorkspace(GetTabAtIndex(index)) &&
++             is_valid_for_focus(index);
+     };
  
-   // First preference is a tab the block opened.
-   int new_selected_index = GetIndexOfNextWebContentsOpenedBy(block_tabs);
-   if (new_selected_index != TabStripModel::kNoTab &&
--      !IsTabCollapsed(new_selected_index)) {
-+      !IsTabUnavailable(new_selected_index)) {
-     return GetTabIndexAfterClosing(new_selected_index, block_tabs);
-   }
- 
-@@ -6019,7 +6137,7 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
-   new_selected_index = GetIndexOfNextWebContentsOpenedByOpenerOf(block_tabs);
- 
-   if (new_selected_index != TabStripModel::kNoTab &&
--      !IsTabCollapsed(new_selected_index)) {
-+      !IsTabUnavailable(new_selected_index)) {
-     return GetTabIndexAfterClosing(new_selected_index, block_tabs);
-   }
- 
-@@ -6029,7 +6147,7 @@ std::optional<int> TabStripModel::DetermineNewSelectedIndex(
-     int opener_index = opener ? GetIndexOfTab(opener) : TabStripModel::kNoTab;
-     if (opener_index != TabStripModel::kNoTab &&
-         !block_tabs.Contains(gfx::Range(opener_index)) &&
--        !IsTabCollapsed(opener_index)) {
-+        !IsTabUnavailable(opener_index)) {
-       return GetTabIndexAfterClosing(opener_index, block_tabs);
-     }
-   }
+     // First preference is a tab the block opened.
 diff --git a/chrome/browser/ui/tabs/tab_strip_model.h b/chrome/browser/ui/tabs/tab_strip_model.h
-index 9236b46a6..886440647 100644
+index 1f0e5095f..a9caf17c2 100644
 --- a/chrome/browser/ui/tabs/tab_strip_model.h
 +++ b/chrome/browser/ui/tabs/tab_strip_model.h
-@@ -618,6 +618,17 @@ class TabStripModel {
+@@ -620,6 +620,17 @@ class TabStripModel {
        TabStripUserGestureDetails detail = TabStripUserGestureDetails(
            TabStripUserGestureDetails::GestureType::kOther));
  
@@ -755,7 +725,7 @@ index 9236b46a6..886440647 100644
    // Selects the last tab in the tab strip.
    void SelectLastTab(
        TabStripUserGestureDetails detail = TabStripUserGestureDetails(
-@@ -1191,17 +1202,22 @@ class TabStripModel {
+@@ -1222,17 +1233,22 @@ class TabStripModel {
  
    // Selects either the next tab or the previous tab.
    // Uses MRU order if the user prefers it.
@@ -834,10 +804,10 @@ index 0967577fa..d86764e69 100644
    // Note: 'Pinning' in Glic is a distinct notion.
  
 diff --git a/chrome/browser/ui/tabs/tab_strip_prefs.cc b/chrome/browser/ui/tabs/tab_strip_prefs.cc
-index 47f4f372e..390f3b6f9 100644
+index af92d58dd..e702401b7 100644
 --- a/chrome/browser/ui/tabs/tab_strip_prefs.cc
 +++ b/chrome/browser/ui/tabs/tab_strip_prefs.cc
-@@ -29,12 +29,15 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
+@@ -32,12 +32,15 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
    registry->RegisterIntegerPref(prefs::kVerticalTabsUncollapsedWidth,
                                  kVerticalTabStripDefaultUncollapsedWidth);
  
@@ -2534,7 +2504,7 @@ index 000000000..abb2b4561
 +
 +#endif  // CHROME_BROWSER_UI_WORKSPACES_WORKSPACE_RULES_H_
 diff --git a/chrome/common/pref_names.h b/chrome/common/pref_names.h
-index 258a0527f..cffc57431 100644
+index 4e3cd06a4..d3d17c69a 100644
 --- a/chrome/common/pref_names.h
 +++ b/chrome/common/pref_names.h
 @@ -637,6 +637,19 @@ inline constexpr char kHeliumVerticalRightAligned[] =
