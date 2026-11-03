@@ -1868,10 +1868,10 @@ index 000000000..5f809dda8
 +#endif  // CHROME_BROWSER_UI_VIEWS_WORKSPACES_WORKSPACE_BACKGROUND_H_
 diff --git a/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
 new file mode 100644
-index 000000000..7a7e3846e
+index 000000000..008264095
 --- /dev/null
 +++ b/chrome/browser/ui/views/workspaces/workspace_switcher_view.cc
-@@ -0,0 +1,803 @@
+@@ -0,0 +1,816 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -2131,6 +2131,19 @@ index 000000000..7a7e3846e
 +      ExpandOnHoverLockType::kKeepCurrentState);
 +}
 +
++// Returns the arrow that opens a bubble beside `anchor`, toward the middle of
++// its window: to the left of a tab strip aligned right, to the right of one
++// aligned left. A bubble that grows toward the window edge is squeezed and
++// clipped there, and covers the tab strip.
++views::BubbleBorder::Arrow SideArrowFor(const views::View* anchor) {
++  const views::Widget* widget = anchor->GetWidget();
++  gfx::Point center = anchor->GetLocalBounds().CenterPoint();
++  views::View::ConvertPointToWidget(anchor, &center);
++  return center.x() > widget->GetRootView()->width() / 2
++             ? views::BubbleBorder::RIGHT_TOP
++             : views::BubbleBorder::LEFT_TOP;
++}
++
 +// Shows the icon picker below `anchor`. Keeps a bubble that contains `anchor`
 +// open while the picker has focus.
 +void ShowIconPicker(views::View* anchor,
@@ -2294,7 +2307,7 @@ index 000000000..7a7e3846e
 +            .Build();
 +    *model_ptr = model.get();
 +    auto bubble = std::make_unique<views::BubbleDialogModelHost>(
-+        std::move(model), anchor_.view(), views::BubbleBorder::TOP_LEFT);
++        std::move(model), anchor_.view(), SideArrowFor(anchor_.view()));
 +    views::BubbleDialogDelegate::CreateBubbleDeprecated(
 +        std::move(bubble), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET)
 +        ->Show();

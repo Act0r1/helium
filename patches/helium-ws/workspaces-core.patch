@@ -827,10 +827,10 @@ index af92d58dd..e702401b7 100644
  void MigrateHoverCardMemoryPref(PrefService* local_prefs) {
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.cc b/chrome/browser/ui/workspaces/workspace_controller.cc
 new file mode 100644
-index 000000000..71853eae0
+index 000000000..241d5f53d
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.cc
-@@ -0,0 +1,872 @@
+@@ -0,0 +1,904 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1021,8 +1021,9 @@ index 000000000..71853eae0
 +
 +}  // namespace
 +
-+// Waits for the first navigation of a tab opened by a page, which starts after
-+// the tab is inserted.
++// Watches a new tab until it commits its first web page, so rules also match
++// tabs that get their URL later: tabs opened by pages, addresses typed into a
++// new tab page, and links that redirect to a site with a rule.
 +class WorkspaceController::FirstNavigationObserver
 +    : public content::WebContentsObserver {
 + public:
@@ -1032,10 +1033,25 @@ index 000000000..71853eae0
 +        controller_(controller),
 +        handle_(tab->GetHandle()) {}
 +
++  // May delete `this`.
 +  void DidStartNavigation(content::NavigationHandle* navigation) override {
-+    if (navigation->IsInPrimaryMainFrame() &&
-+        !navigation->IsSameDocument() && !navigation->GetURL().IsAboutBlank()) {
-+      controller_->OnFirstNavigation(handle_, navigation->GetURL());
++    if (navigation->IsInPrimaryMainFrame() && !navigation->IsSameDocument()) {
++      controller_->OnFirstNavigation(handle_, navigation->GetURL(),
++                                     /*committed=*/false);
++    }
++  }
++
++  // May delete `this`.
++  void DidRedirectNavigation(content::NavigationHandle* navigation) override {
++    DidStartNavigation(navigation);
++  }
++
++  // May delete `this`.
++  void DidFinishNavigation(content::NavigationHandle* navigation) override {
++    if (navigation->IsInPrimaryMainFrame() && !navigation->IsSameDocument() &&
++        navigation->HasCommitted()) {
++      controller_->OnFirstNavigation(handle_, navigation->GetURL(),
++                                     /*committed=*/true);
 +    }
 +  }
 +
@@ -1426,24 +1442,40 @@ index 000000000..71853eae0
 +  const content::NavigationEntry* pending =
 +      contents->GetController().GetPendingEntry();
 +  const GURL url = pending ? pending->GetURL() : contents->GetVisibleURL();
-+  if (url.is_empty() || url.IsAboutBlank()) {
-+    first_navigation_observers_[tab->GetHandle()] =
-+        std::make_unique<FirstNavigationObserver>(this, tab);
-+    return GetWorkspaceIdOf(tab);
-+  }
 +  const std::string rule_workspace = GetRuleWorkspace(tab, url);
-+  return rule_workspace.empty() ? GetWorkspaceIdOf(tab) : rule_workspace;
++  if (!rule_workspace.empty()) {
++    return rule_workspace;
++  }
++  first_navigation_observers_[tab->GetHandle()] =
++      std::make_unique<FirstNavigationObserver>(this, tab);
++  return GetWorkspaceIdOf(tab);
 +}
 +
 +void WorkspaceController::OnFirstNavigation(tabs::TabHandle handle,
-+                                            const GURL& url) {
-+  const auto observer = first_navigation_observers_.extract(handle);
++                                            const GURL& url,
++                                            bool committed) {
++  // Pages that are not web sites, such as the new tab page, keep the tab
++  // waiting for the address typed into it.
++  if (!url.SchemeIsHTTPOrHTTPS()) {
++    return;
++  }
 +  tabs::TabInterface* tab = handle.Get();
 +  if (!model_ || !tab || model_->GetIndexOfTab(tab) == TabStripModel::kNoTab) {
++    first_navigation_observers_.erase(handle);
 +    return;
 +  }
 +  const std::string id = GetRuleWorkspace(tab, url);
-+  if (id.empty() || id == GetWorkspaceIdOf(tab)) {
++  if (id.empty()) {
++    // A redirect may still lead to a site with a rule. After the first page
++    // commits, the tab stays where it is.
++    if (committed) {
++      first_navigation_observers_.erase(handle);
++    }
++    return;
++  }
++  // Deletes the observer that called this method; it is not used below.
++  first_navigation_observers_.erase(handle);
++  if (id == GetWorkspaceIdOf(tab)) {
 +    return;
 +  }
 +  const std::string previous = active_;
@@ -1705,10 +1737,10 @@ index 000000000..71853eae0
 +}  // namespace workspaces
 diff --git a/chrome/browser/ui/workspaces/workspace_controller.h b/chrome/browser/ui/workspaces/workspace_controller.h
 new file mode 100644
-index 000000000..ff3d31f2b
+index 000000000..5f47c8df3
 --- /dev/null
 +++ b/chrome/browser/ui/workspaces/workspace_controller.h
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,220 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1868,10 +1900,14 @@ index 000000000..ff3d31f2b
 +  // string if no rule applies.
 +  std::string GetRuleWorkspace(const tabs::TabInterface* tab,
 +                               const GURL& url) const;
-+  // Picks the workspace of a tab that was just inserted. Tabs opened by pages
-+  // get their URL later, so they are matched on their first navigation.
++  // Picks the workspace of a tab that was just inserted. A tab that matches no
++  // rule yet is matched again on the navigations up to its first web page.
 +  std::string GetInsertedTabWorkspace(tabs::TabInterface* tab);
-+  void OnFirstNavigation(tabs::TabHandle handle, const GURL& url);
++  // Moves the tab to the workspace whose rule matches `url`. Stops watching the
++  // tab once a rule matched or a web page `committed`.
++  void OnFirstNavigation(tabs::TabHandle handle,
++                         const GURL& url,
++                         bool committed);
 +  bool ShouldFollowRule() const;
 +  std::string GetWorkspaceIdOf(const tabs::TabInterface* tab) const;
 +  void SetActive(const std::string& id);
